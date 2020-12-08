@@ -1,0 +1,347 @@
+---
+title: "16S Beta diversity"
+author: "Lisa-Marie Delpech"
+date: "20/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+  
+  
+# Documentation
+  
+**Input**: OTU and site tables from script "**16S_Data_formatting.Rmd**"  
+  
+**Outputs**:  
+  
+*  statistical analysis: ANOSIM, PERMANOVA, for beta diversity   
+*  NMDS ordinations for seasonality and water type  
+*  PCA ordinations for seasonality and water type  
+  
+**Dependancies**: **Vegan**, **ggplot2**, **AnosimPosthoc.R** (author Christiane Hassenrück, please see: <https://gitlab.leibniz-zmt.de/chh/bioinf>)  
+
+
+# Input data and libraries  
+  
+```{r}
+relrarOTU <- readRDS(file = "./R_data/relrarOTU.rds")
+relOTU <- readRDS(file = "./R_data/relOTU.rds")
+rarOTU <- readRDS(file = "./R_data/rarOTU.rds")
+subsites <- readRDS(file = "./R_data/subsites.rds")
+sites <- readRDS(file = "./R_data/sites.rds")
+```
+  
+```{r, results = 'hide', message = FALSE}
+require(ggplot2)
+require(vegan)
+require(cowplot)
+```
+
+```{r}
+source("./Sources/AnosimPosthoc.R")
+```
+
+# OTU turnover
+
+```{r}
+# How many OTUs are not shared (proportional)
+Dist <- vegdist(relrarOTU, method="jaccard", binary=T)
+
+# Multivariate homogeneity of groups dispersions (variances)
+anova(betadisper(Dist, subsites$season))
+anova(betadisper(Dist, subsites$water))
+```
+
+## Turnover between groups
+
+### Aggregate tables
+
+**NB.** This step takes time.  
+
+```{r}
+agOTU <- as.data.frame(relrarOTU)
+
+typeOTU <- aggregate(agOTU,by=list(subsites$type), FUN="sum")
+waterOTU <- aggregate(agOTU,by=list(subsites$water),FUN="sum")
+seasonOTU <- aggregate(agOTU, by=list(subsites$season), FUN="sum")
+Aug.waterOTU <- aggregate(agOTU[which(subsites$season=="August"),], by = list(subsites$water[which(subsites$season=="August")]), FUN= "sum") # spatial gradient in August only
+Jun.waterOTU <- aggregate(agOTU[which(subsites$season=="June"),], by = list(subsites$water[which(subsites$season=="June")]), FUN= "sum") # June only
+month.waterOTU <- aggregate(agOTU, by = list(subsites$month_water), FUN = "sum")
+
+
+rownames(typeOTU) <- as.character(typeOTU$Group.1)
+rownames(waterOTU) <- as.character(waterOTU$Group.1)
+rownames(seasonOTU) <- as.character(seasonOTU$Group.1)
+rownames(month.waterOTU) <- as.character(month.waterOTU$Group.1)
+rownames(Aug.waterOTU) <- as.character(Aug.waterOTU$Group.1)
+rownames(Jun.waterOTU) <- as.character(Jun.waterOTU$Group.1)
+
+
+typeOTU <- typeOTU[,-1]
+waterOTU <- waterOTU[,-1]
+seasonOTU <- seasonOTU[,-1]
+month.waterOTU <- month.waterOTU[,-1]
+Aug.waterOTU <- Aug.waterOTU[,-1]
+Jun.waterOTU <- Jun.waterOTU[,-1]
+```
+
+### Comparment and season
+
+```{r}
+season.Dist <- vegdist(seasonOTU, method = "jaccard", binary =T)
+season.Dist
+```
+
+
+### Turnover between water types
+
+```{r}
+water.Dist <- vegdist(waterOTU, method = "jaccard", binary = T)
+water.Dist
+```
+
+Separate water types between June and August
+
+```{r}
+water.season.Dist <- vegdist(month.waterOTU, method = "jaccard", binary = T)
+water.season.Dist
+```
+
+
+# Multivariate statistics
+
+Relative rarefied data used. Unrarefied and rarefy data show the same patterns here.  
+  
+  
+## ANOSIM
+
+Are samples within groups more similar than between groups?  
+$H_{0}$: the similarities within sites are smaller or equal to the similarities between sites  
+  
+Based on a dissimilarity matrix  
+Computing statistical test before NMDS or PCA plot avoids biais in hypotheses  
+
+### Environmental compartments  
+
+```{r}
+ANOSIMposthoc(relrarOTU, subsites$type, distance="bray", padj="fdr") # Benjamini-Hochberg correction for multiple tests
+ANOSIMposthoc(relrarOTU, subsites$type, distance="jaccard", padj="fdr") # Check that bray and Jaccard give similar results
+```
+
+  
+### Seasonal groupings in the water column  
+
+```{r}
+ANOSIMposthoc(relrarOTU, subsites$season, distance = "bray", padj= "fdr") # Seasonal grouping + compartment
+
+ANOSIMposthoc(relrarOTU[which(subsites$type == "Fjord"),], subsites$month[which(subsites$type == "Fjord")], distance = "bray", padj= "fdr") # Season (water column)
+```
+
+  
+### Water type groupings in the water column  
+
+```{r, message = FALSE}
+ANOSIMposthoc(relrarOTU, subsites$water, distance = "bray", padj = "fdr") # Water type groupings
+
+ANOSIMposthoc(relrarOTU[which(subsites$season != "June"),], subsites$water[which(subsites$season != "June")], distance = "bray", padj = "fdr") # Water type groupings in August only
+
+ANOSIMposthoc(relrarOTU[which(subsites$season != "August"),], subsites$water[which(subsites$season != "August")], distance = "bray", padj = "fdr") # Water type groupings in June only
+
+# Or
+ANOSIMposthoc(relrarOTU, subsites$month_water, distance = "bray", padj = "fdr") # Water type and month
+```
+  
+  
+## PERMANOVA
+
+Non-parametric multivariate analysis of variance based on any dissimilarity measure.  
+$H_{0}$: the centroids and dispersion of the groups as defined by measure space are equivalent for all groups
+
+
+```{r}
+adonis(relrarOTU ~ subsites$type) # Environmental compartment explains 
+
+adonis(relrarOTU ~ subsites$season) # Seasonal groupings 45% of variance explained (including compartment)
+
+adonis(relrarOTU ~ subsites$water) # Water type groupings 40% of variance explained (but including compartment - sediments and rivers)
+
+adonis(relrarOTU[which(subsites$type == "Fjord"),] ~ subsites$season[which(subsites$type == "Fjord")]) # 24% explained by month in the water column
+
+adonis(relrarOTU[grep("Fjord",subsites$type),] ~ subsites$water[grep("Fjord",subsites$type)]) # 12% explained by water type in the water column (all months)
+
+adonis(relrarOTU[grep("Fjord",subsites$type),] ~ subsites$season[grep("Fjord",subsites$type)]) # 24 % explained by month in the water column
+
+adonis(relrarOTU[which(subsites$season == "August"),] ~ subsites$water[which(subsites$season == "August")]) # In August, 26%, p = 0.001
+
+adonis(relrarOTU[which(subsites$season == "June"),] ~ subsites$water[which(subsites$season == "June")]) # In June, 13% but p > 0.05
+```
+
+
+# NMDS ordinations
+
+Compute NMDS based on dissimilarity matrices (Bray-Curtis index or Jaccard index)  
+
+```{r, message = FALSE, results = 'hide'}
+NMDS <- metaMDS(relrarOTU, trymax = 50, k = 2, distance="jaccard")
+NMDS$stress # display stress value (0.15)
+
+NMDS <- metaMDS(relrarOTU, trymax = 50, k = 2) # bray curtis, k=dimension
+NMDS$stress # display stress value (0.15)
+```
+
+With unrarefied data
+
+```{r, results = 'hide'}
+NMDS.unrar <- metaMDS(relOTU, trymax = 50, k = 2, distance="bray")
+NMDS.unrar$stress # display stress value (0.15)
+```
+
+## NMDS plots
+
+### For all sites by season and water type  
+
+```{r, fig.height=7, fig.width=7}
+df.NMDS <- data.frame(NMDS$points) # get NMDS coordinates for each sample
+
+plot.NMDS.season <- ggplot(data = df.NMDS,
+                    aes(x = MDS1, y = MDS2, col = subsites$water, shape = subsites$season)) +
+  geom_point(size = 4) +
+  scale_color_manual(values = levels(subsites$waterCol)) +
+  scale_shape_manual(values = c(18,16,17,15)) +
+  labs(col = "Water type", shape = "Habitat and Month", x = "NMDS1", y = "NMDS2") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        #legend.position = "none", #c(0.765, 0.805)
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(col = guide_legend(ncol=2), shape = guide_legend(ncol=2))
+  
+plot.NMDS.season
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/NMDS_season_legend.pdf", height = 7, width = 7)
+```
+
+```{r, eval = FALSE, include = FALSE}
+saveRDS(plot.NMDS.season, file = "./R_data/R_plots/plotNMDSseason.rds")
+```
+
+### With unrarefied data
+
+```{r, fig.height = 7, fig.width = 7}
+df.NMDS <- data.frame(NMDS.unrar$points) # get NMDS coordinates for each sample
+
+plot.NMDS.season.unrar <- ggplot(data = df.NMDS,
+                    aes(x = MDS1, y = MDS2, col = sites$water, shape = sites$season)) +
+  geom_point(size = 4) +
+  scale_color_manual(values = levels(sites$waterCol)) +
+  scale_shape_manual(values = c(18,16,17,15)) +
+  labs(col = "Water type", shape = "Compartment and Month", x = "NMDS1", y = "NMDS2") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = c(0.24, 0.805),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(col = guide_legend(ncol=2),
+         shape = guide_legend(ncol = 2))
+  
+plot.NMDS.season.unrar
+```
+
+```{r, eval = FALSE}
+ggsave("./Plots/NMDS_season_unrar.pdf")
+```
+
+# PCA and CA ordinations
+
+Rarefied data were used here.  
+NMDS was used with Bray-Curtis dissimilarity index, which is not sensitive to null values, and was better suited to investigate the spatial gradient (separating surface waters and advected water, and also inner from outer fjord), whereas PCA is based on Euclidean distances (Hellinger or clr tranformations), sensitive to null values, and was better suited to investigate the seasonal gradient.  
+
+## PCA and CA calculations
+
+These ordinations are based on Euclidean distances and therefore need to be Hellinger or central log ratio transformed before computation.  
+
+```{r}
+hellinger_relrarOTU <- decostand(relrarOTU, method = "hellinger") # Hellinger transformation
+
+clr_relrarOTU <- relrarOTU # Central log transformation
+clr_relrarOTU <- clr_relrarOTU + 1 # Add prior to avoid problems with zeros
+for (i in 1:nrow(clr_relrarOTU)){ # for each sample
+  log2m <- mean(log2(clr_relrarOTU[i,])) # compute mean of ln
+  clr_relrarOTU[i,] <- log2(clr_relrarOTU[i,]) - log2m   
+}
+```
+
+```{r}
+PCA <- rda(hellinger_relrarOTU) # Hellinger transformed
+#PCA <- rda(clr_relrarOTU) # clr transformed
+#CA <- cca(hellinger_relrarOTU)
+
+df.PCA <- data.frame(summary(PCA)$sites) # Get the PC for each site as a data frame
+```
+
+## PCA and CA plots
+
+All sites by season and water type
+
+```{r, fig.height=7, fig.width=7}
+plot.PCA.season <- ggplot(data = df.PCA[,1:2], # PC1 and PC2
+                   aes(x = PC1, y = PC2, col = subsites$water, shape = subsites$season)) +
+  geom_point(size = 4) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  scale_colour_manual(values = levels(subsites$waterCol)) +
+  scale_shape_manual(values = c(18,16,17,15)) +
+  labs(col = "Water type", shape = "Compartment and Month") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = c(0.24, 0.805),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank()) +
+  guides(col = guide_legend(ncol=2),
+         shape = guide_legend(ncol = 2))
+
+plot.PCA.season
+```
+
+
+# Plot for paper
+
+```{r, eval = FALSE, include = FALSE}
+plot.NMDS.season <- readRDS("./R_Data/R_plots/plotNMDSseason.rds")
+plot.NMDS.metabo <- readRDS("./R_data/R_plots/plotNMDSmetabo.rds")
+```
+
+```{r, eval = FALSE, fig.width = 7, fig.height = 14}
+plot.Beta.diversity <- plot_grid(plot.NMDS.season, plot.NMDS.metabo, nrow = 2) # Dependant on the 16S_Functional_analysis.Rmd script
+plot.Beta.diversity
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/Beta_diversity.pdf", width = 7, height = 14)
+```
+

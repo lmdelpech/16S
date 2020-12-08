@@ -1,0 +1,685 @@
+---
+title: "16S Alpha diversity"
+author: "Lisa-Marie Delpech"
+date: "20/11/2020"
+output:
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Documentation
+
+**Input**: tables from the script "16S_Data_formatting.Rmd" - subsampled and rarefied OTU tables, and corresponding sample site description table.  
+  
+**Outputs**:  
+  
+*  plot.Rarecurves: plot rarefaction curves, with vertical line at the minimum of sequencing depth (when some samples were removed)  
+*  Alpha: successive rarefaction of dataset were performed to calculate several diversity indices  
+*  plot for all these indices, against season and water type groups  
+*  eveness calculations and plot (Pielou's index)  
+*  statistical analysis of variance of these indices  
+*  phylogenetic diversity calculations (taxonomic diversity, functional diversity (not operational yet))  
+  
+**Dependancies**: packages **Vegan**, **ggplot2**, **cowplot**, **dunn.test**, **subsampleNGS.R** (author: Christiane Hassenrück; please visit: <https://github.com/chassenr/NGS/tree/master/Plotting>)
+
+
+# Input data, libraries and dependancies
+
+```{r}
+OTU <- readRDS("./R_Data/OTU.rds")
+subOTU <- readRDS("./R_Data/subOTU.rds") # Unrarefied OTU table
+rarOTU <- readRDS("./R_Data/rarOTU.rds") # Rarefied OTU table
+subsites <- readRDS("./R_data/subsites.rds")
+Alpha <- readRDS("./R_data/alpha.rds")
+```
+
+
+```{r, results = 'hide', message = FALSE}
+require(vegan)
+require(ggplot2)
+require(dunn.test)
+require(cowplot)
+```
+
+```{r}
+source("./Sources/SubsampleNGS.R")
+```
+
+
+# Rarefaction curves
+
+```{r}
+nSeq <- colSums(subOTU) # Calculate number of sequences per sample (unrarefied dataset)
+
+plot.Rarecurves <- ggplot() # Initialise the plot
+
+for (i in 1:ncol(subOTU)){    # Add each curve one by one
+  x <- seq(0, nSeq[i], 1000) 
+  y <- as.vector(rarefy(subOTU[,i],  # Rarefaction of the sample to the resolution of x     
+                 sample = x))
+  plot.Rarecurves <- plot.Rarecurves +
+    geom_line(data = data.frame(x,y), aes(x = x, y = y, col = subsites$type), colour = subsites$typeCol[i])
+}
+
+plot.Rarecurves <- plot.Rarecurves +
+  labs(x = "Number of sequences", y = "OTU number", col = "Type") +
+  geom_vline(xintercept=42000, linetype="dotted") +
+  theme_linedraw()
+plot.Rarecurves
+```
+
+
+# Alpha diversity indices
+
+## Subsampling and calculations of indices
+
+```{r, result = 'hide', eval = FALSE}
+nSeq <- colSums(subOTU) # Take the minimum number of sequences per sample in the table where unrelevant samples were removed (nSeq = )
+
+Alpha <- SubsampleNGS(OTU,                 # input data
+                      n = 100,             # repeat subsamping 100 times
+                      sub = min(nSeq),     # min(nSeq) to subsample to the minimum library size in the subOTU dataset
+                      subTable = F         # write a rarefied table (similar to rarOTU) to working directory?
+)
+```
+
+Compute eveness separately  
+
+Pielou's eveness index :
+
+$$ J = \frac{H}{log(S)} $$
+
+Where H is Shannon-Weaver diversity's index, and S the number of species, for each sample.  
+  
+The calculations of diversity indices require rarefied data.  
+
+```{r}
+H <- diversity(t(rarOTU), index = "shannon", base = exp(1))
+
+S <- specnumber(t(rarOTU)) # Species number
+
+J <- H/log(S) # Pielou's index
+
+Pielou <- data.frame(J, subsites$water, subsites$season, subsites$month_water)
+colnames(Pielou) <- c("J","Water","Season", "Month_water")
+```
+
+## Alpha diversity indices and rare biosphere
+
+Plot the different indices calculated simultaneously to the subsampling above, according to the microhabitat or type.  
+Make a boxplot with ggplot.  
+
+### Water type and month groupings
+
+Create a dataframe for each index   
+
+```{r}
+indices <- rownames(Alpha$summaryAlpha) # This loop assigns a dataframe to each index, containing its values for each sample and the column describing water type
+for (i in  1:nrow(Alpha$summaryAlpha)){
+  assign(indices[i],data.frame(Alpha$summaryAlpha[i,],subsites$water, subsites$season))
+}
+```
+
+Plot each index according to water type and sampling month  
+Create a boxplot for each index, then gather them into a grid (with cowplot)  
+
+```{r}
+# Number of OTUs
+plot.nOTU.water <- ggplot(data = nOTU, aes(x = nOTU[,2], y = nOTU[,1], fill = nOTU[,3])) +
+  # x: group by water type, y: index, fill: by season group (Sediment, River, Water column June and August)
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3),
+              size = 2.5) + # Implements a small random variation to the location of each point (avoids overplotting)
+  #geom_dotplot(binaxis='y', stackdir='center', dotsize=1) + # another option without these small variations
+  scale_fill_manual(values = levels(subsites$seasonCol)) + # "#FDE725AD","#440154AD" Viridis for June and August, with transparency hex BD
+  labs(x = element_blank(), y ="nOTU", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none", # Don't plot the legend for each plot but for the entire grid (cf. cowplot)
+        axis.text.x = element_text(size = 24, angle = 60, hjust = 1),
+        axis.text.y = element_text(size = 24),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24))
+
+# Chao1 (abundance-based richness)
+plot.Chao1.water <- ggplot(data = chao1, aes(x = chao1[,2], y = chao1[,1], fill = chao1[,3])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3),
+              size = 2.5) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Chao1", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none", # Don't plot the legend for each plot but for the entire grid (cf. cowplot)
+        axis.text.x = element_text(size = 24, angle = 60, hjust = 1),
+        axis.text.y = element_text(size = 24),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24)) 
+
+# Shannon's diversity index
+plot.Shannon.water <- ggplot(data = chao1, aes(x = shannon[,2], y = shannon[,1], fill = shannon[,3])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3),
+              size = 2.5) + 
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Shannon", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none", # Don't plot the legend for each plot but for the entire grid (cf. cowplot)
+        axis.text.x = element_text(size = 24, angle = 60, hjust = 1),
+        axis.text.y = element_text(size = 24),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24)) 
+
+# Inverse Simpson's diversity index
+plot.invS.water <- ggplot(data = chao1, aes(x = invS[,2], y = invS[,1], fill = invS[,3])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3),
+              size = 2.5) + 
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Inverse Simpson's", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none", # Don't plot the legend for each plot but for the entire grid (cf. cowplot)
+        axis.text.x = element_text(size = 24, angle = 60, hjust = 1),
+        axis.text.y = element_text(size = 24),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24)) 
+
+# Relative singletons (rare biosphere)
+plot.SSOrel.water <- ggplot(data = chao1, aes(x = SSOrel[,2], y = SSOrel[,1], fill = SSOrel[,3])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3),
+              size = 2.5) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Relative SSO", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none", # Don't plot the legend for each plot but for the entire grid (cf. cowplot)
+        axis.text.x = element_text(size = 24, angle = 60, hjust = 1),
+        axis.text.y = element_text(size = 24),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24)) 
+
+# Pielou's eveness index
+plot.Pielou.water <- ggplot(data = Pielou, aes(x = Pielou[,2], y = Pielou[,1], fill = Pielou[,3])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3),
+              size = 2.5) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Pielou's evenness", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none", # Don't plot the legend for each plot but for the entire grid (cf. cowplot)
+        axis.text.x = element_text(size = 24, angle = 60, hjust = 1),
+        axis.text.y = element_text(size = 24),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24)) 
+```
+
+
+Plot a grid with all indices
+
+```{r, fig.width = 23, fig.height = 9}
+plot.Alpha.diversity <- plot_grid(plot.Chao1.water,plot.Pielou.water,plot.Shannon.water,plot.SSOrel.water, labels = c("", "", "", "", "", ""), nrow = 1, ncol = 4)
+plot.Alpha.diversity
+
+# Get the legend from one of the plots and add beneath the grid plot
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/Alpha_diversity.pdf", width = 23, height = 9)
+```
+
+And for the legend
+
+```{r, eval = FALSE, include = FALSE}
+ggsave(plot.nOTU.water, file = "./Plots/nOTU_water.pdf", width = 7, height = 7)
+```
+
+
+### Seasonal groupings
+
+```{r}
+indices <- rownames(Alpha$summaryAlpha)
+for (i in  1:nrow(Alpha$summaryAlpha)){
+  assign(indices[i],data.frame(Alpha$summaryAlpha[i,], subsites$season))
+}
+
+Pielou <- data.frame(J, subsites$type, subsites$water, subsites$season)
+colnames(Pielou) <- c("J","Type","Water","Season")
+
+# Number of OTU
+plot.nOTU.season <- ggplot(data = nOTU, aes(x = nOTU[,2], y = nOTU[,1], fill = nOTU[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="nOTU", fill = "Compartment and season") +
+  theme_classic() +
+  theme(legend.position="none", #"bottom" to get the legend for the whole grid
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Chao1 (abundance based richness)
+plot.Chao1.season <- ggplot(data = chao1, aes(x = chao1[,2], y = chao1[,1], fill = chao1[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Chao1", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# ACE (abundance based richness)
+plot.ACE.season <- ggplot(data = ace, aes(x = ace[,2], y = ace[,1], fill = ace[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="ACE", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Shannon's diversity index
+plot.Shannon.season <- ggplot(data = shannon, aes(x = shannon[,2], y = shannon[,1], fill = shannon[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Shannon", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Inverse Simpson's diversity index
+plot.invS.season <- ggplot(data = invS, aes(x = invS[,2], y = invS[,1], fill = invS[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="invS", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Number of singletons (absolute)
+plot.SSOabs.season <- ggplot(data = SSOabs, aes(x = SSOabs[,2], y = SSOabs[,1], fill = SSOabs[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="SSOabs", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Number of singletons (relative)
+plot.SSOrel.season <- ggplot(data = SSOrel, aes(x = SSOrel[,2], y = SSOrel[,1], fill = SSOrel[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="SSOrel", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Number of doubletons (absolute)
+plot.DSOabs.season <- ggplot(data = DSOabs, aes(x = DSOabs[,2], y = DSOabs[,1], fill = DSOabs[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="DSOabs", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+
+# Pielou's eveness index
+plot.Pielou.season <- ggplot(data = Pielou, aes(x = Season, y = J, fill = Season)) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$seasonCol)) +
+  labs(x = element_blank(), y ="Pielou's evenness", fill = "Season") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 24))
+```
+
+```{r, fig.width = 15, fig.height = 10}
+plot.Alpha.diversity.season <- plot_grid(plot.nOTU.season, plot.Chao1.season, plot.Pielou.season, plot.Shannon.season, plot.invS.season, plot.SSOrel.season, labels=c("", "", "","","",""), ncol = 3, nrow = 2)
+plot.Alpha.diversity.season
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/Alpha_diversity_season.pdf", width = 15, height = 10)
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave(plot.nOTU.season, file = "./Plots/nOTU_season.pdf")
+```
+
+
+### Water type groupings
+
+```{r}
+indices <- rownames(Alpha$summaryAlpha) # This loop assigns a dataframe to each index, containing its values for each sample and the column describing water type
+for (i in  1:nrow(Alpha$summaryAlpha)){
+  assign(indices[i],data.frame(Alpha$summaryAlpha[i,],subsites$water))
+}
+
+# Number of OTU
+plot.nOTU.water <- ggplot(data = nOTU, aes(x = nOTU[,2], y = nOTU[,1], fill = nOTU[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="nOTU", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none", #"right" to extract the legend for the whole grid
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# Chao1 (abundance based richness)
+plot.Chao1.water <- ggplot(data = chao1, aes(x = chao1[,2], y = chao1[,1], fill = chao1[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="Chao1", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# ACE (abundance based richness)
+plot.ACE.water <- ggplot(data = ace, aes(x = ace[,2], y = ace[,1], fill = ace[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="ACE", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# Shannon's diversity index
+plot.Shannon.water <- ggplot(data = shannon, aes(x = shannon[,2], y = shannon[,1], fill = shannon[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="Shannon", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# Inverse Simpson's diversity index
+plot.invS.water <- ggplot(data = invS, aes(x = invS[,2], y = invS[,1], fill = invS[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="invS", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# Number of singletons (absolute)
+plot.SSOabs.water <- ggplot(data = SSOabs, aes(x = SSOabs[,2], y = SSOabs[,1], fill = SSOabs[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="SSOabs", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# Number of singletons (relative)
+plot.SSOrel.water <- ggplot(data = SSOrel, aes(x = SSOrel[,2], y = SSOrel[,1], fill = SSOrel[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="SSOrel", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+# Number of doubletons (absolute)
+plot.DSOabs.water <- ggplot(data = DSOabs, aes(x = DSOabs[,2], y = DSOabs[,1], fill = DSOabs[,2])) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="DSOabs", fill = "Water type") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        axis.title.y = element_text(size = 24))
+
+plot.Pielou.water <- ggplot(data = Pielou, aes(x = Water, y = J, fill = Water)) +
+  geom_boxplot() +
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.3)) +
+  scale_fill_manual(values = levels(subsites$waterCol)) +
+  labs(x = element_blank(), y ="J (Pielou's eveness)", fill = "Water") +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.line = element_line(size = 0.3),
+        panel.grid = element_blank(),
+        legend.title = element_text(size = 16),
+        axis.title.y = element_text(size = 24))
+```
+
+Plot a grid for water type groupings  
+
+```{r, fig.width = 15, fig.height = 10}
+plot.Alpha.diversity.water <- plot_grid(plot.nOTU.water, plot.Chao1.water, plot.Pielou.water, plot.Shannon.water, plot.invS.water, plot.SSOrel.water, labels=c("","","","","",""), ncol = 3, nrow = 2)
+plot.Alpha.diversity.water
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/Alpha_diversity_water.pdf", width = 15, height = 10)
+ggsave(plot.nOTU.water, file = "./Plots/nOTU_water.pdf")
+```
+
+
+# Statistical analyses
+
+Statistical analyses are based on *a priori* groupings, they here distinguish the type of compartment (river, sediment, water column) and the time in the melt-season (June and August), and finally the water type (based on water masses and location in the fjord).  
+
+
+Make a data frame suitable for analyses
+
+```{r}
+AlphaIndices <- data.frame(t(Alpha$summaryAlpha), subsites$type, subsites$water, subsites$season)
+colnames(AlphaIndices)[9:11] <- c("Type","Water","Season")
+```
+
+
+
+## Environmental compartment
+
+Apply Tukey's multiple pairwise-comparisons for each index  
+
+
+```{r}
+# Test normality for each group and each index (shapiro-Wilk)
+
+shapiro.test(AlphaIndices[which(subsites$type == "Sediment"),]$nOTU) # not all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$type == "River"),]$nOTU) # not all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$type == "Fjord"),]$nOTU) # all indices follow normality
+
+
+# Test homoscedasticity (Bartlett)
+
+bartlett.test(chao1 ~ Type, data = AlphaIndices) 
+
+
+# Apply multiple comparison test (Tukey's on ANOVA if normality and homoscedasticity are met for each group, or Dunn's on KW for non-parametric tests)
+
+TukeyHSD(aov(ace ~ Type, data= AlphaIndices)) # Test other indices
+plot(aov(chao1 ~ Type, data= AlphaIndices))
+# 1 variance
+# 2 residuals (linear)
+# 3 outliers
+# plot(TukeyHSD(aov(chao1 ~ Type, data= AlphaIndices)))
+
+dunn.test(AlphaIndices$chao1, subsites$type, method = "bh") # Bonferroni-Hochberg adjustment for multiple tests
+dunn.test(Pielou$J, subsites$type, method = "bh")
+```
+
+
+## Seasonal grouping
+
+```{r}
+# Test normality (Shapiro-Wilk) / homoscedasticity (Bartlett)
+
+shapiro.test(AlphaIndices[which(subsites$season == "Sediment"),]$nOTU) # not all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$season == "River"),]$nOTU) # not all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$season == "June"),]$nOTU) # all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$season == "August"),]$nOTU) # all indices follow normality
+
+# Test homoscedasticity
+bartlett.test(chao1 ~ Season, data= AlphaIndices) # Only SSOabs and DSOabs are not homoscedastic
+
+# Apply parametric or non parametric test
+# Here for the water column (June and August) it is possible to apply Tukey's test but it is also preferable to stick to only one test per analysis. Tukey's can help check the robustness as it is more powerful than Dunn's
+
+TukeyHSD(aov(invS ~ Season, data= AlphaIndices)) # try with other indices, test normality and homogeneity of variance first
+plot(aov(chao1 ~ Season, data= AlphaIndices))
+
+dunn.test(AlphaIndices$chao1, subsites$season, method = "bh")
+dunn.test(Pielou$J, subsites$season, method = "bh")
+```
+
+
+## Water type grouping
+
+```{r}
+shapiro.test(AlphaIndices[which(subsites$water == "Estuary SW"),]$nOTU) # all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$water == "Glacier SW"),]$nOTU) # all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$water == "Fjord SW"),]$nOTU) # all indices follow normality
+shapiro.test(AlphaIndices[which(subsites$water == "AdW"),]$nOTU) # all indices follow normality
+
+bartlett.test(nOTU ~ Water, data= AlphaIndices)
+
+TukeyHSD(aov(chao1 ~ Water, data= AlphaIndices))
+
+dunn.test(AlphaIndices$chao1, subsites$water, method = "bh")
+dunn.test(Pielou$J, subsites$water, method = "bh")
+```
+
+
+# Save R data
+
+```{r, eval = FALSE}
+saveRDS(Alpha, file = "./R_data/alpha.rds")
+```
+

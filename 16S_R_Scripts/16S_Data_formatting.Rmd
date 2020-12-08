@@ -1,0 +1,349 @@
+---
+title: "16S Data formatting"
+author: "Lisa-Marie Delpech"
+date: "20/11/2020"
+output: 
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Documentation
+
+**Input**: outputs from ReadAmplicon.R (raw data, see end of the amplicon workflow)  
+  
+**Outputs**: tables necessary for all further analyses
+
+*  OTU, subOTU, rarOTU, relOTU, relrarOTU: OTU contingency tables, OTU with singletons removed, sub- with samples removed that had low number of sequences (>42000), rar- rarefied dataset corresponding to subOTU, rel- relative abundances corresponding to OTU, relrar- relative abundancies corresponding to rarOTU  
+*  sites, subsites: file describing sites, type, month, season, water type groups, and colors associated. subsites corresponds to the same samples as in subOTU  
+*  taxonomy, subtaxonomy: taxonomic levels (up to Genus) for each OTU, subtaxonomy corresponding to rarefied data (sub-, rar- and relrarOTU)  
+  
+**Dependancies**: **ReadAmplicon.R** outputs (author: Christiane Hassenrück, please visit <https://github.com/chassenr/NGS/tree/master/AMPLICON>), **stringr**
+
+
+# Input data and libraries
+
+```{r}
+OTU <- read.table("./OTU_table.txt", header=T, row.names=1) # Output from ReadAmplicon.R
+taxonomy <- read.table("./Taxonomy_table.txt", header=T, sep="\t", row.names=1) # Output from ReadAmplicon.R
+# sites <- readRDS("./R_data/sites.rds")
+```
+
+```{r}
+require(stringr)
+require(tidyverse)
+```
+
+
+# Remove singletons and contaminants
+
+## Singletons
+
+To reach higher robustness and save calculation time for OTUs that would not be relevant.  
+  
+There are many ways to define singletons; here, to be considered as a singleton, an OTU is present in less than two sequences in one sample. To be retained, the OTU has to be present with more than two sequences in more than one sample.
+
+
+```{r}
+dim(OTU) # Check the dimensions
+dim(taxonomy)
+
+OTU_single <- OTU # Keep OTUs including singletons as a file
+taxonomy_single <- taxonomy # And same for taxonomy
+```
+
+
+```{r}
+OTU <- OTU[apply(OTU, 1, function(x){sum(x>2)>1}), ] # Keep only the rows (OTUs) that have sums > 1 (present in more than one sample, more than 2 sequences)
+dim(OTU) # Check the dimensions again
+
+taxonomy <- taxonomy[rownames(OTU),] # And subset taxonomy accordingly
+dim(taxonomy) # Check that the dimensions match
+
+all.equal(rownames(taxonomy), rownames(OTU)) # Check whether new taxonomy and OTU file fit in dimensions and rownames
+```
+
+Check the proportion of sequences that were retained
+
+```{r}
+hist(colSums(OTU)/colSums(OTU_single)*100, xlab="% of sequences retained", main="Proportion of retained sequences after singleton removal")
+
+#% of sequences retained
+sum(OTU)/sum(OTU_single) *100
+```
+
+## Contaminants
+
+Identify contaminant sequences.
+With a control, one option is to remove sequences identified in the control condition from the dataset by substracting control sequences from each sample (as a blank). Some packages provide options for decontamination (**decontam** for example).
+
+```{r}
+Control <- OTU$Control_PCR_Seq # Save the control column
+
+OTU_control <- OTU # Save a table for statistics (singletons removed, not control)
+OTU <- OTU[,which(str_detect(colnames(OTU),"Control")==FALSE)] # Remove the control column from OTU table
+
+OTU <- OTU - Control # Substract control sequences from all samples
+OTU[OTU < 0] <- 0 # Set negative values to 0
+```
+
+
+# Rarefy dataset
+
+The rarefaction process also adds some robustness to the dataset.
+
+## Check distribution of sequences per sample
+
+```{r}
+nSeq <- colSums(OTU) # number of sequences per sample
+sort(nSeq)
+summary(nSeq)
+hist(nSeq)
+min(nSeq)
+```
+
+The variance in the sequence number is quite large for this dataset, despite normalization before library preparation. 
+We suggest dropping a few subsampled samples and thus increase the rarefaction depth (min(nSeq)) to 42 000 sequences.  
+  
+Remove the irrelevant samples (with a too low number of sequences)  
+
+```{r}
+sub <- 42000 # leaves out eight samples out of 95
+subOTU <- OTU
+subOTU <- subOTU[, colSums(subOTU) >= sub]
+
+nSeq <- colSums(subOTU) # Re calculate nSeq for the new subsampled OTU table
+summary(nSeq) # Here the minimum number of sequences is 42990
+hist(nSeq)
+```
+
+## Random subsampling
+
+This function allows to manually generate a rarefied dataset to the minimum number of sequences in the samples. To not lose too many data, retrieve the samples that have a very low number of sequences (see above).  
+For alpha diversity calculation, the subsampling is made repetitivly to reach higher robustness (see **16S Alpha diversity**).  
+A rarefied table can also be written to working directory within alpha diversity calculation.  
+
+```{r}
+sub <- min(nSeq)
+
+x_sub <- list()
+for (i in 1:ncol(subOTU)){ #For each sample
+  #print(i)
+  sub1 <- rep(rownames(subOTU), subOTU[,i]) # Each rowname (otu) is repeated to reach the number of sequences in the sample
+  sub2 <- sample(sub1, size=sub) # Randomly sample the OTU count to the minimum of sequences
+  x_sub[[i]] <- data.frame(table(sub2)) # Each element of the list is a df with name of the otu and amount in the sample
+  colnames(x_sub[[i]]) <- c("ref.otu","abundance")
+}
+```
+
+Rebuild subsampled OTU dataframe
+
+```{r}
+rarOTU <- matrix(NA,nrow(subOTU),length(x_sub)) # Initialise, dimension is number of OTUs x number of samples
+colnames(rarOTU) <- colnames(subOTU)
+rownames(rarOTU) <- rownames(subOTU)
+
+for (i in 1:length(x_sub)){ # For each sample
+  ref.otu <- as.character(x_sub[[i]][,1])
+  rarOTU[ref.otu,i] <- x_sub[[i]][,2] # Assign number of otu to the sample column i
+}
+
+rarOTU[is.na(rarOTU)] <- 0 # Change NA to 0
+rarOTU <- as.data.frame(rarOTU)
+rarOTU <- rarOTU[apply(rarOTU, 1, function(x){sum(x)>0}),] # Remove empty OTU
+```
+
+## Output some statistics
+
+```{r, eval = FALSE, include = FALSE}
+# Number of raw reads after bioinformatic processing (before ReadAmplicon.R)
+
+#otu <- read.table("/Users/lisadelpech/Documents/ENS Lyon/ENS 2019-2020/UiT_2020/16S_Data_analysis_R/Raw/OTU_contingency_table.csv", h = T, sep = "\t")
+# colnames(otu) <- sapply(colnames(otu), function(x) {
+#     strsplit(x, "_der", fixed = T)[[1]][1]
+#     }
+#     )
+# raw <- as.data.frame(colSums(otu[,3:(ncol(otu)-1)]))
+# colnames(raw) <- "Raw"
+```
+
+
+```{r, eval = FALSE, include = FALSE}
+curated <- as.data.frame(colSums(OTU_single)) # control and singletons not removed
+colnames(curated) <- "Curated"
+singletons <- as.data.frame(colSums(OTU_control)) # singletons removed control not removed
+colnames(singletons) <- "Singletons_removed"
+control <- as.data.frame(colSums(OTU)) # singletons and control removed
+colnames(control) <-  "Control_removed"
+subsampled <- as.data.frame(colSums(subOTU), col.names = c("Samples_removed")) # subsampled table (sum should be the same as above but with less samples)
+colnames(subsampled) <-  "Samples_removed"
+rarefied <- as.data.frame(colSums(rarOTU), col.names = c("Rarefied")) # rarefied OTUs
+colnames(rarefied) <-  "Rarefied"
+
+read_metadata <- raw
+read_metadata$Curated <- curated$Curated
+read_metadata$Singletons_removed <- singletons$Singletons_removed
+read_metadata$Control_removed <- read_metadata$Raw # Initialize column control
+read_metadata[rownames(control),]$Control_removed <- control$Control_removed # Assign numbers
+read_metadata[which((rownames(read_metadata) %in% rownames(control)) == FALSE),"Control_removed"] <- NA # Assign NA to samples removed (control here)
+read_metadata$Samples_removed <- read_metadata$Raw # Initialize column subsampled
+read_metadata[rownames(subsampled),]$Samples_removed <- subsampled$Samples_removed
+read_metadata[which((rownames(read_metadata) %in% rownames(subsampled)) == FALSE),"Samples_removed"] <- NA # Assign NA to samples removed (control here)
+read_metadata$Rarefied <- read_metadata$Raw # Initialize column subsampled
+read_metadata[rownames(rarefied),]$Rarefied <- rarefied$Rarefied
+read_metadata[which((rownames(read_metadata) %in% rownames(rarefied)) == FALSE),"Rarefied"] <- NA # Assign NA to samples 
+read_metadata
+
+read_metadata <- as.data.frame(t(read_metadata))
+read_metadata$Number_reads <-  rowSums(read_metadata, na.rm = TRUE)
+read_metadata$Number_OTUs <- c(nrow(otu),nrow(OTU_single),nrow(OTU_control),nrow(OTU),nrow(subOTU),nrow(rarOTU))
+read_metadata <- as.data.frame(t(read_metadata))
+read_metadata # Needs to be added: raw reads before pipeline
+# write.table(read_metadata, file = "~/Desktop/read_metadata.csv", sep = ",")
+```
+
+
+# Relative abundances
+
+Compute the proportion of OTUs in the transposed form.  
+**NB.** **prop.table** only works on matrices, we thus use the transposition that creates a matrix.
+
+```{r}
+relOTU <- prop.table(t(OTU),1)*100 # Abundance relative to the row (sample)
+relrarOTU <- prop.table(t(rarOTU),1)*100  # For the rarefied table
+```
+
+# Create a site description table
+
+This section is only appropriated for this dataset but can be reused for similar analyses. Otherwise, loading an excel file is also a solution.
+
+## Build site table based on original dataset
+
+
+```{r}
+station_names <- colnames(OTU)
+
+month <- c()
+month[grep("Jun",station_names)] <- "June"
+month[grep("Aug",station_names)] <- "August"
+
+type <- c(rep("Fjord",time=length(station_names)))
+type[grep("Sed",station_names)] <- "Sediment"
+type[grep("Riv",station_names)] <- "River"
+
+
+season <- month # Four groups here, river, sediment, June and August
+season[grep("Sed",station_names)] <- "Sediment"
+season[grep("Riv",station_names)] <- "River"
+
+water <- c("Estuary SW","Estuary SW","Sediment","Estuary SW","Estuary SW","Estuary SW","AdW","Sediment","Estuary SW","Estuary SW","Fjord SW","AdW","Sediment","Fjord SW","Fjord SW","River","River","Sediment","Sediment","Sediment","Sediment","AdW","Glacier SW","Sediment","Glacier SW","Glacier SW","Fjord SW","Fjord SW","Sediment","Sediment",
+"AdW","Fjord SW","Fjord SW","Fjord SW","Estuary SW","AdW","Estuary SW","River","River","River","River","River","River","River","River","AdW","AdW","AdW","AdW","AdW","AdW","Fjord SW","Fjord SW","AdW","AdW","AdW","Fjord SW","AdW","AdW","Sediment","Fjord SW","Fjord SW","River","Sediment","Sediment","AdW","AdW","Sediment","Glacier SW","Glacier SW","AdW","AdW","Sediment","Glacier SW","Glacier SW","AdW","Fjord SW","Sediment","Fjord SW","Fjord SW","AdW","Estuary SW","Sediment","Estuary SW","Estuary SW","Estuary SW","Sediment","Estuary SW","Estuary SW","AdW","Sediment","Estuary SW","Estuary SW","River","River")
+# Added manually
+
+month_water <- month # Separate water type within the season
+month_water[which(month == "June" & water == "AdW")] <- "June AdW"
+month_water[which(month == "June" & water == "Estuary SW")] <- "June Estuary SW"
+month_water[which(month == "June" & water == "Fjord SW")] <- "June Fjord SW"
+month_water[which(month == "June" & water == "Glacier SW")] <- "June Glacier SW"
+month_water[which(month == "August" & water == "AdW")] <- "August AdW"
+month_water[which(month == "August" & water == "Estuary SW")] <- "August Estuary SW"
+month_water[which(month == "August" & water == "Fjord SW")] <- "August Fjord SW"
+month_water[which(month == "August" & water == "Glacier SW")] <- "August Glacier SW"
+month_water[grep("Sed",station_names)] <- "Sediment"
+month_water[which(type == "River")] <- "River"
+
+
+sites <- data.frame(station_names, month, type, season, water, month_water) # data.frame() function assigns chr to factor by default
+row.names(sites) <- station_names
+
+# Reorder levels here to change order of downstream plots
+sites$month <- factor(sites$month, c("June", "August"))
+
+sites$water <- factor(sites$water, c("River", "Estuary SW", "Glacier SW", "Fjord SW", "AdW", "Sediment")) # Sediment was moved to last position 
+sites$season <- factor(sites$season, c("River","June","August", "Sediment")) # Sediment was moved to last position
+
+sites$month_water <- factor(sites$month_water, c("River", "June Estuary SW", "June Glacier SW", "June Fjord SW", "June AdW", "August Estuary SW", "August Glacier SW", "August Fjord SW", "August AdW", "Sediment"))
+```
+
+## Assign colors to the levels
+
+```{r}
+sites$monthCol <- sites$month
+levels(sites$monthCol) <- c("#1B9E77BD", "#7570B3BD") # June, August (former: "#34A999","#1B6792")
+
+sites$typeCol <- sites$type
+levels(sites$typeCol) <- c("#2378BF", "#A09888","#645536") # Fjord blue, river brown, sediment grey
+
+
+sites$seasonCol <- sites$season
+levels(sites$seasonCol) <- c("#A09888","#1B9E77BD", "#7570B3BD","#645536") # River, June, August, Sediment (former June & August :"#34A999","#1B6792")
+
+sites$waterCol <- sites$water
+levels(sites$waterCol) <- c("#A09888","#52C29D","#B4EAEE","#2378BF","#182E61", "#645536") # River, Estuary_SW, Glacier_SW, Fjord_SW, AdW, Sediment
+
+sites$month_waterCol <- sites$month_water
+levels(sites$month_waterCol) <- c("#A09888", "#1B9E77BD","#1B9E77BD","#1B9E77BD","#1B9E77BD","#7570B3BD","#7570B3BD","#7570B3BD","#7570B3BD", "#645536") # River, Water column June, Water column August, Sediment
+
+```
+
+
+
+# Match subsampled files
+
+To match subOTU and rarOTU, some samples need to be removed from the site file and the taxonomy file.
+
+## Match with OTU tables
+
+```{r}
+subsites <- sites[colnames(subOTU),] # matching the number of samples
+subtaxonomy <- taxonomy[rownames(rarOTU),] # matching the number of OTUs
+```
+
+## Match with environmantal data
+
+Some of the samples available in OTU don't have available metadata. Subset OTU and site dataframes accordingly to metadata rownames  
+
+```{r}
+meta <- readRDS(file = "./R_data/meta.rds")
+```
+
+```{r}
+OTU.meta <- OTU[,rownames(meta)]
+relOTU.meta <- relOTU[rownames(meta),] # For relative abundances
+rarOTU.meta <- rarOTU[, colnames(rarOTU) %in% rownames(meta)] # With deleted samples and rarefied data (corresponds to subOTU and rarOTU)
+relrarOTU.meta <- relrarOTU[rownames(relrarOTU) %in% rownames(meta),] # Relative abundances corresponding to rarefied subsampled data
+submeta <- meta[rownames(relrarOTU.meta),] # Match meta file to rarOTU.meta and relrarOTU.meta
+# or
+# submeta <- meta[rownames(meta) %in% rownames(relrarOTU),]
+
+sites.meta <- sites[rownames(meta),] # Match site description file
+subsites.meta <- sites[rownames(submeta),] # With deleted samples
+
+all.equal(rownames(meta), colnames(OTU.meta)) # Check that names match
+```
+
+
+# Save tables to directory
+
+The tables are saved in format RDS to avoid loading the entire environment and to be able to load them independantly.
+
+```{r, eval = FALSE}
+setwd("./R_data")
+saveRDS(subOTU, "subOTU.rds") # subsampled but unrarefied dataset
+saveRDS(rarOTU, "rarOTU.rds") # subsampled and rarefied dataset
+saveRDS(OTU, "OTU.rds") # singletons removed, contaminants removed, not subsampled
+saveRDS(relOTU, "relOTU.rds") # singletons removed, contaminants removed, not subsampled, relative abundances
+saveRDS(relrarOTU, "relrarOTU.rds") # rarefied, relative abundances
+saveRDS(subsites, "subsites.rds") # site description file corresponding to the sampes in subOTU, rarOTU
+saveRDS(taxonomy, "taxonomy.rds") # taxonomy file corresponding to samples in OTU
+saveRDS(subtaxonomy, "subtaxonomy.rds") # taxonomy file corresponding to samples in OTU
+saveRDS(submeta, "submeta.rds")
+saveRDS(subsites.meta, "subsitesmeta.rds")
+```
+
+Or save working environment (.Rdata)
+

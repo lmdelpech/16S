@@ -1,0 +1,410 @@
+---
+title: "16S Indicator species"
+author: "Lisa-Marie Delpech"
+date: "23/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+# Documentation
+
+**Input**: tables from the script **16S_Data_formatting.Rmd** and files / function from the script **16S_Taxonomic_composition.Rmd**
+  
+**Outputs**:  
+
+*  indicator OTUs for seasonality (other groups *e.g.* water type not relevant due to a gradient, not enough difference between fjord sites and not enough indicators)  
+*  filtered indicators based on IV (≥ 0.7) and p-value (≤ 0.001)  
+*  tables of highly abundant indicators for seasonal grouping, based on a 0.5% relative abundance threshold, and giving the genus to which belong the OTUs, as well as corresponding number of significant indicator OTUs    
+  
+**Dependancies**: **indicspecies**, **vegan**, **ggplot2**, **taxa.pooler.1.4.R** (authors: Gobet A. & Ramette A., see: <https://gitlab.leibniz-zmt.de/chh/bioinf/blob/788dc1a3e2a03ba0e60c120e12663e99599ab3e1/taxa.pooler.1.4.r>) 
+
+# Input data and libraries
+
+## Load data tables
+
+```{r}
+rarOTU <- readRDS("./R_data/rarOTU.rds")
+subsites <- readRDS("./R_data/subsites.rds")
+indval.season <- readRDS("./R_data/indval.rds")
+taxonomy <- readRDS("./R_data/taxonomy.rds")
+subtaxonomy <- readRDS("./R_data/subtaxonomy.rds")
+```
+
+
+## Libraries
+
+```{r}
+require(vegan)
+require(indicspecies)
+require(ggplot2)
+
+source("./Sources/taxa.pooler.1.4.R")
+```
+
+
+
+# Indicator Value analysis with site group combinations
+
+Compute IndVal using multipatt function from the *indicspecies* package.
+By default *multipatt* uses an extension of the original Indicator Value method, because the function looks for indicator species of both individual site groups and combinations of site groups, as explained in De Cáceres et al. [2010]
+The option control = how(nperm=9999) allows choosing the number of random permutations required for the permutational test (this number affects the precision of the p-value). Function how from the permute package allows defining more complex permutational designs.
+*multipatt* function returns the square root of IndVal.
+
+Data used: rarefied, subsampled
+
+
+# Indicator species for seasonality
+
+## Indicator value
+
+Run indicator analysis. The **multipatt** function requires a numerical grouping (cluster)  
+
+```{r}
+groups.season <- c(as.numeric(subsites$season))
+group_names <- subsites$season
+```
+
+```{r, eval = FALSE}
+indval.season <- multipatt(t(rarOTU),cluster=groups.season,func="IndVal.g",
+                    control=how(nperm=9999))
+
+save.RDS(indval.season, "./R_data/indval.rds") # As this step takes time, save the output of multipatt
+```
+
+Extract the good information from the analysis  
+
+```{r}
+summary(indval.season, indvalcomp=TRUE, alpha=0.001)
+IV <- as.data.frame(indval.season$str) # indicator value
+sign <- as.data.frame(indval.season$sign)
+significance <- data.frame(sign$p.value) # p-values
+row.names(significance) <- rownames(sign)
+```
+
+Get the significant indicator species  
+Filter the indicator species based on indicator value (IV), and significance level (alpha, p-value), for each group independently (ommiting combinations)  
+
+```{r}
+IndSpe.season <- list() # 1 Riv, 2 June, 3 Aug, 4 Sed
+for (i in 1:length(levels(as.factor(groups.season)))){
+  otu <- rownames(IV[which(IV[,i]>=0.7),]) # Filter the IV
+  otu <- otu[which(significance[otu,]<=0.001)] # Filter the p-value
+  tax <- taxonomy[otu,"genus"] # Get taxonomy accordingly (genus)
+  #otu <- otu[- grep("NA_unclassified",tax)] # Omit NA_unclassified and match otu
+  #tax <- tax[- grep("NA_unclassified",tax)] # Omit NA_unclassified
+  stat <- IV[otu,i] # Get the IV
+  alpha <- significance[otu,] # Get the p-value
+  IndSpe.season[[i]] <- data.frame(otu,tax,stat,alpha)
+}
+# output: a list of dataframes with significant indicator OTUs, taxonomy, IV and p value
+```
+
+## Output tables of indicators
+
+Get the names of all significant indicators (all groups together)
+
+```{r}
+names <- c()
+for (i in 1:length(IndSpe.season)){
+  names <- c(names,as.character(IndSpe.season[[i]]$otu)) # Collect all indicator OTU names 
+}
+
+indicOTU.tax <- subtaxonomy[levels(as.factor(names)),] # Subset taxonomy accordingly
+```
+
+Make a taxonomy df for taxa pooler
+
+```{r}
+indicOTU.tax2 <- cbind(rownames(indicOTU.tax), indicOTU.tax)
+colnames(indicOTU.tax2)[1] <- "OTU"
+#rownames(indicOTU.tax2) <- NULL
+```
+
+Get the table pooled per genus for all samples (or import from the script **16S_Taxonomic_composition**)
+
+```{r}
+Taxa_pooled <- readRDS("./R_data/Taxa_pooled_all.rds")
+
+relGenus_all <- prop.table(t(Taxa_pooled$genus), 2) * 100
+```
+
+
+### Water column in August
+
+```{r}
+August.names <- as.character(IndSpe.season[[3]]$otu)
+August.indic <- rarOTU[August.names,which(subsites$season == "August")]
+dim(August.indic) # 340 x 29 340 indicator otu and 29 samples in August
+# Pool OTUs by genus
+August.indic.pooled <- taxa.pooler(data.frame(August.indic,indicOTU.tax2[rownames(August.indic),])) # 29, 7, n, n
+August.names.genus <- colnames(August.indic.pooled$genus) # 56 indicator genera (high & low)
+
+# Run relative abundance among indicators
+Indic_relGenus_Aug <- prop.table(t(August.indic.pooled$genus), 2) * 100
+
+Indic_relGenus_Aug_high <- Indic_relGenus_Aug[apply(Indic_relGenus_Aug, 1, FUN = function(x){mean(x) >= 0.5}),] # Filter based on relative abundance within indicators
+
+rowMeans(Indic_relGenus_Aug_high)
+```
+
+Filter based on abundance in August
+
+```{r}
+relGenus.indic.August <- relGenus_all[August.names.genus, which(subsites$season == "August")]
+August.indic.high <- relGenus.indic.August[apply(relGenus.indic.August, 1, FUN = function(x){mean(x) >= 0.5}),] # The highly abundant indicators are defined as: the mean relative abundance in their group is above 0.5%
+
+Aug.indic.high.names <- rownames(August.indic.high) # 27 taxa
+dim(August.indic.high) # number of indicator OTUs 
+apply(August.indic.high, 1, function(x){mean(x)}) # proportion of each taxa
+sum(apply(August.indic.high, 1, function(x){mean(x)})) # check that this proportion matches mean of sample sum
+mean(colSums(August.indic.high)) # = this one
+# get the proportion that these taxa explain within the month
+sum(apply(data.frame(relGenus_all)[Aug.indic.high.names, which(subsites$season == "August")], 1, function(x){mean(x)})) # 75% (sum of the mean relative abundances for all high indicator taxa)
+```
+
+Output a table of high abundant indicators
+
+```{r}
+Aug.indic.table <- as.data.frame(apply(data.frame(relGenus_all)[Aug.indic.high.names, which(subsites$season == "August")], 1, function(x){mean(x)})) # proportion of each taxa in August
+# or relGenus_s[rownames(Aug.indic.table),"August"] (see 16S_Taxonomic_composition)
+colnames(Aug.indic.table) <- "Relative abundance in August"
+Aug.indic.table$Indicators <- rownames(Aug.indic.table)
+Aug.indic.table
+dim(Aug.indic.table) # 28 x 2
+```
+
+Get the number of OTUs that makes up each genus  
+
+```{r}
+nb.otu.Aug <- as.data.frame(table(t(IndSpe.season[[3]][which(IndSpe.season[[3]]$tax %in% rownames(Aug.indic.table)),1:2])))
+row.names(nb.otu.Aug) <- nb.otu.Aug$Var1
+nb.otu.Aug
+
+Aug.indic.table$`Number of OTUs` <- nb.otu.Aug[Aug.indic.table$Indicators, "Freq"]
+Aug.indic.table
+```
+
+Write table to directory
+
+```{r, eval = FALSE}
+saveRDS(Aug.indic.table, "./R_data/August_indicators.rds")
+```
+
+
+For further analysis, a higher threshold of abundance is needed (cf. **16S_Envrionmental_drivers**)
+
+```{r}
+Aug.indic.table.1 <- Aug.indic.table[which(Aug.indic.table$`Relative abundance in August` >= 1),] # Select indicators that have higher abundance than 1%
+Aug.indic.table.1
+dim(Aug.indic.table.1) # 21 x 2
+```
+
+```{r, eval = FALSE}
+saveRDS(Aug.indic.table.1, "./R_data/August_indicators_high.rds")
+```
+
+### Water column in June
+
+```{r}
+June.names <- as.character(IndSpe.season[[2]]$otu)
+June.indic <- rarOTU[June.names,which(subsites$season == "June")] # 204 x 31
+June.indic.pooled <- taxa.pooler(data.frame(June.indic,indicOTU.tax2[rownames(June.indic),])) #31, 7, n, n
+June.names.genus <- colnames(June.indic.pooled$genus)
+
+# Run relative abundance among indicators
+Indic_relGenus_Jun <- prop.table(t(June.indic.pooled$genus), 2) * 100
+
+Indic_relGenus_Jun_high <- Indic_relGenus_Jun[apply(Indic_relGenus_Jun, 1, FUN = function(x){mean(x) >= 0.5}),] # Filter based on relative abundance within indicators
+
+rowMeans(Indic_relGenus_Jun_high)
+```
+
+Filter based on abundance
+
+```{r}
+relGenus.indic.June <- relGenus_all[June.names.genus, which(subsites$season == "June")]
+June.indic.high <- relGenus.indic.June[apply(relGenus.indic.June, 1, FUN = function(x){mean(x) >= 0.5}),]
+
+Jun.indic.high.names <- rownames(June.indic.high) # 16 taxa
+dim(June.indic.high) # number of indicator OTUs
+apply(June.indic.high, 1, function(x){mean(x)}) # proportion of each taxa
+sum(apply(June.indic.high, 1, function(x){mean(x)})) # check that this proportion match mean of sample sum
+mean(colSums(June.indic.high)) # = this one
+# get the proportion that these taxa explain within the month
+sum(apply(data.frame(relGenus_all)[Jun.indic.high.names, which(subsites$season == "June")], 1, function(x){mean(x)})) # 72%
+apply(data.frame(relGenus_all)[Jun.indic.high.names, which(subsites$season == "June")], 1, function(x){mean(x)}) # proportion of each taxa in June
+```
+
+Output a table of high abundant indicator
+
+```{r}
+Jun.indic.table <- as.data.frame(apply(data.frame(relGenus_all)[Jun.indic.high.names, which(subsites$season == "June")], 1, function(x){mean(x)})) # proportion of each taxa in June
+colnames(Jun.indic.table) <- "Relative abundance in June"
+Jun.indic.table$Indicators <- rownames(Jun.indic.table)
+Jun.indic.table
+dim(Jun.indic.table) # 16 x 2
+```
+
+Get the number of OTUs that makes up each genus  
+
+```{r}
+nb.otu.Jun <- as.data.frame(table(t(IndSpe.season[[2]][which(IndSpe.season[[2]]$tax %in% rownames(Jun.indic.table)),1:2])))
+row.names(nb.otu.Jun) <- nb.otu.Jun$Var1
+nb.otu.Jun
+
+Jun.indic.table$`Number of OTUs` <- nb.otu.Jun[Jun.indic.table$Indicators, "Freq"]
+Jun.indic.table
+```
+
+Write table to directory
+
+```{r, eval = FALSE}
+saveRDS(Jun.indic.table, "./R_data/June_indicators.rds")
+```
+
+
+For further analysis, a higher threshold of abundance is needed (cf. **16S_Envrionmental_drivers**)
+
+```{r}
+Jun.indic.table.1 <- Jun.indic.table[which(Jun.indic.table$`Relative abundance in June` >= 1),] # Select indicators that have higher abundance than 1%
+Jun.indic.table.1
+dim(Jun.indic.table.1) # 15 x 3
+```
+
+```{r, eval = FALSE}
+saveRDS(Jun.indic.table.1, "./R_data/June_indicators_high.rds")
+```
+
+### Rivers
+
+```{r}
+River.names <- as.character(IndSpe.season[[1]]$otu)
+River.indic <- rarOTU[River.names,which(subsites$season == "River")] #1924 x 11
+River.indic.pooled <- taxa.pooler(data.frame(River.indic,indicOTU.tax2[rownames(River.indic),])) # 11, 7, n, n
+River.names.genus <- colnames(River.indic.pooled$genus)
+
+# Run relative abundance among indicators
+Indic_relGenus_Riv <- prop.table(t(River.indic.pooled$genus), 2) * 100
+
+Indic_relGenus_Riv_high <- Indic_relGenus_Riv[apply(Indic_relGenus_Riv, 1, FUN = function(x){mean(x) >= 0.5}),] # Filter based on relative abundance within indicators
+
+rowMeans(Indic_relGenus_Riv_high)
+```
+
+Filter based on abundance
+
+```{r}
+relGenus.indic.River <- relGenus_all[River.names.genus,which(subsites$season == "River")]
+River.indic.high <- relGenus.indic.River[apply(relGenus.indic.River, 1, FUN = function(x){mean(x) >= 0.5}),] # 35 indicators
+
+Riv.indic.high.names <- rownames(River.indic.high) # 35 taxa
+dim(River.indic.high) # number of indicator OTUs
+apply(River.indic.high, 1, function(x){mean(x)}) # proportion of each taxa
+sum(apply(River.indic.high, 1, function(x){mean(x)})) # check that this proportion matches mean of sample sum
+mean(colSums(River.indic.high)) # = this one
+# get the proportion that these taxa explain within the month
+sum(apply(data.frame(relGenus_all)[Riv.indic.high.names, which(subsites$season == "River")], 1, function(x){mean(x)})) # 70%
+apply(data.frame(relGenus_all)[Riv.indic.high.names, which(subsites$season == "River")], 1, function(x){mean(x)}) # proportion of each taxa in the rivers
+```
+
+Output a table of high abundant taxa
+
+```{r}
+Riv.indic.table <- as.data.frame(apply(data.frame(relGenus_all)[Riv.indic.high.names, which(subsites$season == "River")], 1, function(x){mean(x)})) # proportion of each taxa in the rivers
+colnames(Riv.indic.table) <- "Relative abundance in rivers"
+Riv.indic.table$Indicators <- rownames(Riv.indic.table)
+dim(Riv.indic.table) # 32 indicators 
+sum(Riv.indic.table$`Relative abundance in rivers`) # for 70 %
+```
+
+Get the number of OTUs that makes up each genus  
+
+```{r}
+nb.otu.Riv <- as.data.frame(table(t(IndSpe.season[[1]][which(IndSpe.season[[1]]$tax %in% rownames(Riv.indic.table)),1:2])))
+row.names(nb.otu.Riv) <- nb.otu.Riv$Var1
+nb.otu.Riv
+
+Riv.indic.table$`Number of OTUs` <- nb.otu.Riv[Riv.indic.table$Indicators, "Freq"]
+Riv.indic.table
+```
+
+Write table to directory
+
+```{r, eval = FALSE}
+saveRDS(Riv.indic.table, "./R_data/River_indicators.rds")
+```
+
+
+For further analysis, a higher threshold of abundance is needed (cf. **16S_Envrionmental_drivers**)
+
+```{r}
+Riv.indic.table <- Riv.indic.table[which(Riv.indic.table$`Relative abundance in rivers` >= 1),] # Select indicators that have higher abundance than 1%
+Riv.indic.table
+dim(Riv.indic.table) # 
+```
+
+
+### Sediments
+
+```{r}
+Sed.names <- as.character(IndSpe.season[[4]]$otu)
+Sed.indic <- rarOTU[Sed.names,which(subsites$season == "Sediment")]
+Sed.indic.pooled <- taxa.pooler(data.frame(Sed.indic,indicOTU.tax2[rownames(Sed.indic),])) # 16 samples
+Sed.indic.names <- colnames(Sed.indic.pooled$genus)
+
+# Run relative abundance among indicators
+Indic_relGenus_Sed <- prop.table(t(Sed.indic.pooled$genus), 2) * 100
+
+Indic_relGenus_Sed_high <- Indic_relGenus_Sed[apply(Indic_relGenus_Sed, 1, FUN = function(x){mean(x) >= 0.5}),] # Filter based on relative abundance within indicators
+
+rowMeans(Indic_relGenus_Sed)
+```
+
+Filter based on a 0.5% relative abundance threshold
+
+```{r}
+relGenus.indic.Sed <- relGenus_all[Sed.indic.names, which(subsites$season == "Sediment")]
+Sed.indic.high <- relGenus.indic.Sed[apply(relGenus.indic.Sed, 1, FUN = function(x){mean(x) >= 0.5}),] # 40 indicators
+
+Sed.indic.high.names <- rownames(Sed.indic.high) # 40 taxa
+dim(Sed.indic.high) # number of indicator OTUs
+apply(Sed.indic.high, 1, function(x){mean(x)}) # proportion of each taxa
+sum(apply(Sed.indic.high, 1, function(x){mean(x)})) # check that this proportion matches mean of sample sum
+mean(colSums(Sed.indic.high)) # = this one
+# get the proportion that these taxa explain within the month
+sum(apply(data.frame(relGenus_all)[Sed.indic.high.names, which(subsites$season == "Sediment")], 1, function(x){mean(x)})) # 62 %
+apply(data.frame(relGenus_all)[Sed.indic.high.names, which(subsites$season == "Sediment")], 1, function(x){mean(x)}) # proportion of each taxa in the sediments
+```
+
+Output a table of high abundant indicators
+
+```{r}
+Sed.indic.table <- as.data.frame(apply(data.frame(relGenus_all)[Sed.indic.high.names, which(subsites$season == "Sediment")], 1, function(x){mean(x)})) # proportion of each taxa in the sediments
+colnames(Sed.indic.table) <- "Relative abundance in sediments"
+Sed.indic.table$Indicators <- rownames(Sed.indic.table)
+Sed.indic.table <- Sed.indic.table[-37,] # remove unknown family unclassified (6%)
+dim(Sed.indic.table) # 39 indicators 
+sum(Sed.indic.table$`Relative abundance in sediments`) # for 55 %
+```
+
+Get the number of OTUs that makes up each genus  
+
+```{r}
+nb.otu.Sed <- as.data.frame(table(t(IndSpe.season[[4]][which(IndSpe.season[[4]]$tax %in% rownames(Sed.indic.table)),1:2])))
+row.names(nb.otu.Sed) <- nb.otu.Sed$Var1
+nb.otu.Sed
+
+Sed.indic.table$`Number of OTUs` <- nb.otu.Sed[Sed.indic.table$Indicators, "Freq"]
+Sed.indic.table
+```
+
+Write table to directory
+
+```{r, eval = FALSE}
+saveRDS(Sed.indic.table, "./R_data/Sediment_indicators.rds")
+```
+

@@ -1,0 +1,1036 @@
+---
+title: "16S Environmental drivers"
+author: "Lisa-Marie Delpech"
+date: "22/11/2020"
+output:
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Documentation
+
+**Input**: image from the script **16S_Preliminaries.Rmd**, also metadata files for environmental variables, and output tables from the script **16S_Indicators.Rmd**    
+  
+**Outputs**:   
+  
+*  PCA ordinations on environmental data only and on commmunity data only  
+*  procrustes analysis for these two PCA and statistical test with protest  
+*  constrained analysis (RDA/CCA) for water column samples only  
+*  statistical analysis of RDA (forward model selection, anova)  
+  
+**Dependancies**: **Vegan**, **MASS**, **rcompanion**, **ggplot2**, **dplyr**, **Hmisc**  
+
+
+# Input data and libraries
+
+## Load data tables
+
+```{r}
+meta <- readRDS("./R_data/meta.rds")
+submeta <- readRDS("./R_data/submeta.rds")
+relrarOTU <- readRDS("./R_data/relrarOTU.rds")
+relOTU <- readRDS("./R_data/relOTU.rds")
+sites <- readRDS("./R_data/sites.rds")
+subsites <- readRDS("./R_data/subsites.rds")
+taxonomy <- readRDS("./R_data/taxonomy.rds")
+```
+
+Match OTU tables and metadata files. Some of the samples available in OTU don't have available metadata. Subset OTU and site dataframes accordingly to metadata rowname.  
+
+```{r}
+relrarOTU.meta <- relrarOTU[rownames(relrarOTU) %in% rownames(submeta),] # Relative abundances corresponding to rarefied subsampled data and samples available in metadata
+relOTU.meta <- relOTU[rownames(meta),] # For relative abundances unrarefied data
+sites.meta <- sites[rownames(meta),] # Match site description file
+subsites.meta <- subsites[rownames(submeta),] 
+
+all.equal(rownames(submeta), rownames(relrarOTU.meta)) # Check that names match
+all.equal(rownames(subsites.meta), rownames(submeta)) # Check that names match
+all.equal(rownames(meta), rownames(relOTU.meta)) # Check that names match
+```
+
+## Libraries
+
+```{r, results = 'hide', message = FALSE}
+require(MASS)
+require(rcompanion)
+require(vegan)
+require(ggplot2)
+require(Hmisc)
+require(dplyr)
+```
+
+# Overview of the metadata
+
+Check the data
+
+```{r}
+log_submeta <- log10(abs(submeta+1)) # log transformation, add prior to avoid null values
+plotNormalHistogram(log_submeta)
+
+pairs(submeta) # Check colinearity betweeen variables
+```
+
+Output a table that summarizes environmental data
+
+```{r}
+meta_summary <- meta[which(sites.meta$type != "River"),]
+meta_summary$Group <-  sites.meta$month_water[which(sites.meta$type != "River")]
+
+meta_summary <- meta_summary %>%
+  group_by(Group) %>%
+  summarise_all(list(~ mean(., na.rm = TRUE), ~ sd(., na.rm = TRUE))) # Compute mean and sd
+
+# rownames <- meta_summary$Group
+# 
+# meta_summary <- data.frame(t(meta_summary))
+# colnames(meta_summary) <- rownames
+# meta_summary <- meta_summary[-1,]
+meta_summary
+```
+
+
+```{r, eval = FALSE}
+write.table(meta_summary, "~/Desktop/meta_summary.csv", sep = ",")
+```
+
+
+# PCA ordinations on environmental and community data
+
+## Environmental data ordination
+
+PCA on environmental data
+
+```{r}
+envar.PCA <- rda(log_submeta[which(subsites.meta$type=="Fjord" & log_submeta$DOC!="NA"),]) # leaves out 10 samples
+```
+
+Plot environmental variables PCA
+
+```{r, fig.height = 7, fig.width = 7}
+df.PCA.env <- data.frame(summary(envar.PCA)$sites) # Get the PC for each site as a data frame
+
+plot.PCA.env <- ggplot(data = df.PCA.env[,1:2], # PC1 and PC2
+                       aes(x = PC1, y = PC2,
+                           col = subsites.meta$water[which(subsites.meta$type=="Fjord" & log_submeta$DOC!="NA")],
+                           shape = subsites.meta$month[which(subsites.meta$type=="Fjord" & log_submeta$DOC!="NA")])) + # If DOC is included, avoid NA:  & log_submeta$DOC!="NA")
+  geom_point(size = 4) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  scale_colour_manual(values = levels(subsites.meta$waterCol[which(subsites.meta$type=="Fjord")])[2:5]) +
+  labs(col = "Water type", shape = "Month") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = c(0.88, 0.82),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+
+plot.PCA.env
+```
+
+## Community ordination
+
+This is a similar PCA to the one in the script "**16S_Beta_diversity.Rmd**" with the exception of some samples that are not available in the metadata.  
+Transform the data.  
+
+```{r}
+hellinger_relrarOTU.meta <- decostand(relrarOTU.meta, "hellinger") # PCA is based on euclidean distances
+
+clr_relrarOTU.meta <- relrarOTU.meta # Central log transformation
+clr_relrarOTU.meta <- clr_relrarOTU.meta + 1 # Add prior to avoid problems with zeros
+for (i in 1:nrow(clr_relrarOTU.meta)){ # for each sample
+  log2m <- mean(log2(clr_relrarOTU.meta[i,])) # compute mean of ln
+  clr_relrarOTU.meta[i,] <- log2(clr_relrarOTU.meta[i,]) - log2m   
+}
+```
+
+```{r}
+# !!!  Match the samples with the envar PCA for procrustes analysis !!!
+community.PCA <- rda(hellinger_relrarOTU.meta[which(subsites.meta$type=="Fjord" & log_submeta$DOC!="NA"),]) # If DOC is included, avoid NA:  & log_submeta$DOC!="NA") 
+```
+
+```{r, fig.height = 7, fig.width = 7}
+df.PCA.community <- data.frame(summary(community.PCA)$sites) # Get the PC for each site as a data frame
+
+plot.PCA.community <- ggplot(data = df.PCA.community[,1:2], # PC1 and PC2
+                       aes(x = PC1, y = PC2,
+                           col = subsites.meta$water[which(subsites.meta$type=="Fjord" & log_submeta$DOC!="NA")], # & log_submeta$DOC!="NA"
+                           shape = subsites.meta$season[which(subsites.meta$type=="Fjord" & log_submeta$DOC!="NA")])) + # & log_submeta$DOC!="NA"
+  geom_point(size = 4) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  scale_colour_manual(values = levels(subsites.meta$waterCol[which(subsites.meta$type=="Fjord")])[2:5]) + # /!\ Color order because of levels
+  scale_shape_manual(values = c(16,17)) + # /!\ Color order because of levels
+  labs(col = "Water type", shape = "Month") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = c(0.60, 0.82),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())
+plot.PCA.community
+```
+
+  
+## Procrustes analysis
+  
+```{r}
+env.Procrustes <- procrustes(community.PCA,envar.PCA, symmetric=TRUE)
+summary(env.Procrustes)
+```
+  
+Test significance  
+  
+```{r}
+env.Procrustes.sign <- protest(envar.PCA, community.PCA, scores="sites") # p < 0.001
+env.Procrustes.sign
+```
+
+
+# Constrained analysis
+
+## Water column seasonality
+
+### Compute the RDA
+
+Format environmental variables
+
+```{r}
+names.season.RDA <- which(subsites.meta$type=="Fjord" & submeta$DOC!="NA") # Get all water column samples available in envrionmental data and with defined DOC values
+
+Salinity <- submeta$Salinity[names.season.RDA]
+Temperature <- submeta$Temperature[names.season.RDA]
+Turbidity <- submeta$Turbidity[names.season.RDA]
+Depth <- submeta$Station_Depth[names.season.RDA]
+Secchi <- submeta$Secchi[names.season.RDA]
+SPM <- submeta$SPM[names.season.RDA]
+SUVA <- submeta$SUVA254[names.season.RDA]
+Chla <- submeta$Chla[names.season.RDA]
+Phaeo <- submeta$Phaeo[names.season.RDA]
+d13C.POM <- submeta$d13C_POM[names.season.RDA]
+d15N.POM <- submeta$d15N_POM[names.season.RDA]
+POC <- submeta$POC[names.season.RDA]
+CN.POM <- submeta$CN_POM[names.season.RDA]
+partP <- submeta$PartP[names.season.RDA]
+partN <- submeta$PartN[names.season.RDA]
+SiO2 <- submeta$SiO2[names.season.RDA]
+NO2.NO3 <- submeta$NO2_NO3[names.season.RDA]
+DOC <- submeta$DOC[names.season.RDA] # Missing values,leaving samples out
+PO4 <- submeta$PO4[names.season.RDA]
+NH4 <- submeta$NH4[names.season.RDA]
+```
+
+RDA  
+
+```{r, eval = FALSE}
+season.RDA <- rda(hellinger_relrarOTU.meta[names.season.RDA,] ~ Salinity+Temperature+Turbidity+SPM+Secchi+SUVA+Phaeo+Chla+SiO2+CN.POM+d15N.POM+d13C.POM+DOC+POC+PO4+NH4+partP+partN+NO2.NO3)
+
+summary(season.RDA) # RDA1 35% ; RDA2 16%
+
+anova.season.RDA <- anova(season.RDA)
+anova.season.RDA # 0.001
+anova.season.RDA.terms <- anova(season.RDA, by = "terms", perm = how(nperm=999), parallel = 4)
+anova.season.RDA.terms # salinity, temperature, turbidity, sechi, SiO2, C:N POM, d13C POC, DOC, POC but this is not a good method to choose the best model
+```
+
+### Forward and reverse model selection and significance of the vectors
+
+Find significance of the vectors and the best fitting model to explain repartition of the community data  
+
+```{r, eval = FALSE}
+# From fitting vectors onto PCA (suitable for seasonality)
+# Salinity, Temp, Turb, Secchi, DOC, NO2+NO3, SiO2, partP and Depth, SPM, SUVA,Chla, Phaeo,POC,CN POM, d13C POM were significant
+
+season.RDA <- rda(hellinger_relrarOTU.meta[names.season.RDA,] ~ Salinity + Temperature + Turbidity + Secchi + SUVA + Phaeo + Chla + SiO2 + CN.POM + d13C.POM + DOC + POC + partP + NO2.NO3)
+
+ordistep <- ordistep(season.RDA) # Salinity + Temperature + Secchi + SUVA + Chla + SiO2 + d13C.POM + DOC + POC + NO2.NO3
+
+partitioning <- varpart(hellinger_relrarOTU.meta[names.season.RDA,], ~ DOC, ~ Temperature, ~SUVA, ~ Secchi) # Should be a table to take more variables into account
+plot(partitioning)
+```
+
+Recompute RDA based on ordistep output
+
+```{r, eval = FALSE}
+season.RDA <- rda(hellinger_relrarOTU.meta[names.season.RDA,] ~ Salinity+Temperature+Secchi+SUVA+Chla+SiO2+d13C.POM+DOC+NO2.NO3)
+summary(season.RDA) # RDA1 42% ; RDA2 19% (61%)
+anova.season.RDA.terms <- anova(season.RDA, by = "term", perm = how(nperm=999), parallel = 4)
+anova.season.RDA.terms
+```
+
+```{r}
+# And only with variables explaining seasonal gradient (removes salinity, SiO2, C:N POM, NO2+NO3)
+season.RDA <- rda(hellinger_relrarOTU.meta[names.season.RDA,] ~ Temperature+Secchi+DOC+Chla+SUVA)
+```
+
+Check statistics
+
+```{r}
+vif.cca(season.RDA) # Turbidity, SPM, POC highly multicollinear
+```
+
+```{r, eval = FALSE}
+summary(season.RDA) # RDA1 53 ; RDA2 22%
+```
+
+```{r}
+anova.season.RDA.terms <- anova(season.RDA, by = "term", perm = how(nperm = 999), parallel = 4)
+anova.season.RDA.terms
+```
+
+### Plot RDA
+
+```{r, fig.height = 7, fig.width = 7}
+scores.season.RDA <- scores(season.RDA, display=c("sites","cn","bp","sp")) # sites, centroids, biplot, species
+RDA.centroids <- data.frame(scores.season.RDA$centroids)
+RDA.sites.fjord <- data.frame(scores.season.RDA$sites)
+RDA.biplot.fjord <- data.frame(scores.season.RDA$biplot)
+RDA.species.fjord <- data.frame(scores.season.RDA$species) # get all OTUs
+RDA.species.fjord <- RDA.species.fjord[which(abs(RDA.species.fjord$RDA1) > 0.07 | abs(RDA.species.fjord$RDA2) > 0.07),] # filter species based on scores
+
+plot.season.RDA <- ggplot(RDA.sites.fjord, aes(x = RDA1, y = RDA2)) +
+  geom_point(aes(x = RDA1, y = RDA2,
+                 col=subsites.meta$water[names.season.RDA],
+                 shape = subsites.meta$month[names.season.RDA]),
+             size = 4) +
+  scale_colour_manual(values = levels(subsites.meta$waterCol)[2:5]) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  geom_segment(data = RDA.biplot.fjord,
+               aes(x = 0, xend = RDA1, y = 0, yend = RDA2),
+               arrow=arrow(length=unit(0.01,"npc")),
+               color = "#C20000") +
+  geom_text(data = RDA.biplot.fjord,
+            aes(x = RDA1*1.05, y = RDA2*1.05, label=rownames(RDA.biplot.fjord)), #c("Temperature","Secchi depth","DOC","POC d13C","Chl a","SUVA 254")), # label = rownames(RDA.biplot.fjord)
+            size = 4,
+            color = "#C20000") +
+  geom_point(data = RDA.species.fjord,
+             aes(x = RDA1*3, y = RDA2*3),
+             col = "black",
+             shape = 3,
+             size = 2) +
+  # geom_text(data = RDA.species.fjord,
+  #           aes(x = RDA1*3, y = RDA2*3, label = taxonomy[rownames(RDA.species.fjord),"genus"]), # Add a multiplicating factor to see the species
+  #           size = 3,
+  #           color = "black") +
+  labs(col = "Water type", shape = "Month",
+       x = "RDA1 53%",
+       y = "RDA2 22%",
+       size = 8) +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text (size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.position = "none") #c(0.125,0.21)
+
+plot.season.RDA
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/RDA_Water_column_Season_v2.pdf")
+```
+
+## Water column without seasonal factor
+
+Temperature is driving seasonality, exclude temperature that overwhelms the water type dispersion  
+Separate August and June to have better resolution  
+
+### August
+
+#### Compute RDA
+
+Format environmental variables
+
+```{r}
+names.Aug.fjord.RDA <- which(subsites.meta$season=="August" & submeta$DOC!="NA") # No DOC missing in Aug
+
+Salinity <- submeta$Salinity[names.Aug.fjord.RDA]
+Temperature <- submeta$Temperature[names.Aug.fjord.RDA]
+Turbidity <- submeta$Turbidity[names.Aug.fjord.RDA]
+Depth <- submeta$Station_Depth[names.Aug.fjord.RDA]
+Secchi <- submeta$Secchi[names.Aug.fjord.RDA]
+SPM <- submeta$SPM[names.Aug.fjord.RDA]
+SUVA <- submeta$SUVA254[names.Aug.fjord.RDA]
+Chla <- submeta$Chla[names.Aug.fjord.RDA]
+Phaeo <- submeta$Phaeo[names.Aug.fjord.RDA]
+d13C.POM <- submeta$d13C_POM[names.Aug.fjord.RDA]
+d15N.POM <- submeta$d15N_POM[names.Aug.fjord.RDA]
+POC <- submeta$POC[names.Aug.fjord.RDA]
+CN.POM <- submeta$CN_POM[names.Aug.fjord.RDA]
+partP <- submeta$PartP[names.Aug.fjord.RDA]
+partN <- submeta$PartN[names.Aug.fjord.RDA]
+SiO2 <- submeta$SiO2[names.Aug.fjord.RDA]
+NO2.NO3 <- submeta$NO2_NO3[names.Aug.fjord.RDA]
+DOC <- submeta$DOC[names.Aug.fjord.RDA]
+PO4 <- submeta$PO4[names.Aug.fjord.RDA]
+NH4 <- submeta$NH4[names.Aug.fjord.RDA]
+```
+
+RDA
+
+```{r, eval = FALSE}
+Aug.fjord.RDA <- rda(hellinger_relrarOTU.meta[names.Aug.fjord.RDA,] ~ Salinity+Temperature+Turbidity+Secchi+SPM+SUVA+Chla+Phaeo+NO2.NO3+SiO2+POC+partP+partN+CN.POM+d15N.POM+d13C.POM+PO4+DOC)
+```
+
+```{r, eval = FALSE}
+anova.Aug.fjord.RDA <- anova(Aug.fjord.RDA)
+anova.Aug.fjord.RDA # p = 0.001
+```
+
+#### Forward and reverse model selection
+
+```{r, eval = FALSE}
+ordistep.Aug <- ordistep(Aug.fjord.RDA) # Salinity + SPM + Phaeo + NO2.NO3 + POC + partP + partN + d15N.POM
+```
+
+Recompute RDA  
+
+```{r}
+Aug.fjord.RDA <- rda(hellinger_relrarOTU.meta[names.Aug.fjord.RDA,] ~ Salinity+Phaeo+NO2.NO3+POC+partP+partN)
+
+# anova.Aug.fjord.RDA <- anova(Aug.fjord.RDA)
+# anova.Aug.fjord.RDA # p = 0.001
+anova.Aug.fjord.RDA.term<- anova(Aug.fjord.RDA, by = "term", perm = how(nperm=100), parallel = 4)
+anova.Aug.fjord.RDA.term # Remove d15N (not significant)
+```
+
+```{r}
+vif.cca(Aug.fjord.RDA) # Check for multicolinaerity
+```
+
+```{r, eval = FALSE}
+summary(Aug.fjord.RDA) # RDA1 37%, RDA2 28%
+```
+
+#### Plot RDA
+
+```{r, fig.height = 7, fig.width = 7}
+scores.Aug.fjord.RDA <- scores(Aug.fjord.RDA, display=c("sites","cn","bp","sp")) #sites, centroids, biplot, species
+RDA.centroids <- data.frame(scores.Aug.fjord.RDA$centroids)
+RDA.sites.Aug <- data.frame(scores.Aug.fjord.RDA$sites)
+RDA.biplot.Aug <- data.frame(scores.Aug.fjord.RDA$biplot)
+RDA.species.Aug <- data.frame(scores.Aug.fjord.RDA$species) # get all OTUs
+RDA.species.Aug <- RDA.species.Aug[which(abs(RDA.species.Aug$RDA1) > 0.06 | abs(RDA.species.Aug$RDA2) > 0.06),] # filter species based on scores
+
+
+plot.Aug.fjord.RDA <- ggplot(RDA.sites.Aug, aes(x = RDA1, y = RDA2)) +
+  geom_point(aes(x = RDA1, y = RDA2,
+                 col=subsites.meta$water[names.Aug.fjord.RDA]),
+             size = 3,
+             shape = 17) +
+  scale_colour_manual(values = levels(subsites.meta$waterCol)[2:5]) + # !!! levels
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  geom_segment(data = RDA.biplot.Aug,
+               aes(x = 0, xend = RDA1, y = 0, yend = RDA2),
+               arrow=arrow(length=unit(0.01,"npc")),
+               color = "#C20000") +
+  geom_text(data = RDA.biplot.Aug,
+            aes(x = RDA1*1.05, y = RDA2*1.05, label=rownames(RDA.biplot.Aug)), #c("Salinity","Phaeophytin","NO2 + NO3","POC","Particulate P","PN d15N","Particulate N")
+            size = 4,
+            color = "#C20000") +
+  geom_point(data = RDA.species.Aug,
+             aes(x = RDA1*3, y = RDA2*3),
+                 shape = 3,
+                 colour = "black",
+                 size = 2) +
+  # geom_text(data = RDA.species.Aug,
+  #           aes(x = RDA1*3, y = RDA2*3, label = taxonomy[rownames(RDA.species.Aug),"genus"]), # Add a multiplicating factor to see the species
+  #           size = 3,
+  #           color = "black") +
+  # geom_text(data = RDA.sites,
+  #           aes(x = RDA1, y = RDA2,
+  #               label = rownames(RDA.sites)),
+  #           size = 3, color = "#C4C4C4") +
+  labs(col = "Water type",
+       x = "RDA1 37%",
+       y = "RDA2 28%",
+       size = 8) +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text (size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.position = c(0.13,0.125))
+  
+plot.Aug.fjord.RDA
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/RDA_Water_column_August_v2.pdf")
+```
+
+### June
+
+#### Compute RDA
+
+```{r}
+names.Jun.fjord.RDA <- which(subsites.meta$type=="Fjord" & subsites.meta$month == "June") # DOC only missing in June but not included for water type. If needed: & submeta$DOC != "NA")
+
+Salinity <- submeta$Salinity[names.Jun.fjord.RDA]
+Temperature <- submeta$Temperature[names.Jun.fjord.RDA]
+Turbidity <- submeta$Turbidity[names.Jun.fjord.RDA]
+Depth <- submeta$Station_Depth[names.Jun.fjord.RDA]
+Secchi <- submeta$Secchi[names.Jun.fjord.RDA]
+SPM <- submeta$SPM[names.Jun.fjord.RDA]
+SUVA <- submeta$SUVA254[names.Jun.fjord.RDA]
+Chla <- submeta$Chla[names.Jun.fjord.RDA]
+Phaeo <- submeta$Phaeo[names.Jun.fjord.RDA]
+d13C.POM <- submeta$d13C_POM[names.Jun.fjord.RDA]
+d15N.POM <- submeta$d15N_POM[names.Jun.fjord.RDA]
+POC <- submeta$POC[names.Jun.fjord.RDA]
+CN.POM <- submeta$CN_POM[names.Jun.fjord.RDA]
+partP <- submeta$PartP[names.Jun.fjord.RDA]
+partN <- submeta$PartN[names.Jun.fjord.RDA]
+SiO2 <- submeta$SiO2[names.Jun.fjord.RDA]
+NO2.NO3 <- submeta$NO2_NO3[names.Jun.fjord.RDA]
+PO4 <- submeta$PO4[names.Jun.fjord.RDA]
+#DOC <- submeta$DOC[names.Jun.fjord.RDA]
+```
+
+RDA  
+
+```{r, eval = FALSE}
+Jun.fjord.RDA <- rda(hellinger_relrarOTU.meta[names.Jun.fjord.RDA,] ~ Salinity+Temperature+Turbidity+Depth+Secchi+SPM+SUVA+Chla+Phaeo+NO2.NO3+SiO2+POC+PO4+partP+partN+CN.POM+d15N.POM+d13C.POM)
+```
+
+Test significance
+
+```{r, eval = FALSE}
+anova.Jun.fjord.RDA <- anova(Jun.fjord.RDA)
+anova.Jun.fjord.RDA # p = 0.002
+```
+
+
+#### Forward and reverse model selection
+
+Choose model and recompute RDA
+
+```{r, eval = FALSE}
+ordistep.June <- ordistep(Jun.fjord.RDA) # NO2.NO3 + partN
+```
+
+```{r}
+Jun.fjord.RDA <- rda(hellinger_relrarOTU.meta[names.Jun.fjord.RDA,] ~ Salinity+NO2.NO3+partN)
+
+# anova.Jun.fjord.RDA <- anova(Jun.fjord.RDA)
+# anova.Jun.fjord.RDA # p = 0.002
+anova.Jun.fjord.RDA.terms <-  anova(Jun.fjord.RDA, by = "term", parallel = 4, perm = how(nperm = 100))
+anova.Jun.fjord.RDA.terms
+```
+
+```{r}
+vif.cca(Jun.fjord.RDA) # Verify multicolinearity
+```
+
+```{r, eval = FALSE}
+summary(Jun.fjord.RDA)
+```
+
+
+#### Plot RDA
+
+```{r}
+scores.Jun.fjord.RDA <- scores(Jun.fjord.RDA, display=c("sites","cn","bp","sp")) # sites, centroids, biplot, pseices
+RDA.centroids <- data.frame(scores.Jun.fjord.RDA$centroids)
+RDA.sites <- data.frame(scores.Jun.fjord.RDA$sites)
+RDA.biplot <- data.frame(scores.Jun.fjord.RDA$biplot)
+RDA.species <- data.frame(scores.Jun.fjord.RDA$species) # get all OTUs
+RDA.species <- RDA.species[which(abs(RDA.species$RDA1) > 0.07 | abs(RDA.species$RDA2) > 0.07),] # filter species based on scores
+
+plot.Jun.fjord.RDA <- ggplot(RDA.sites, aes(x = RDA1, y = RDA2)) +
+  geom_point(aes(x = RDA1, y = RDA2,
+                 col=subsites.meta$water[names.Jun.fjord.RDA]),
+             size = 4) +
+  scale_colour_manual(values = levels(subsites.meta$waterCol[names.Jun.fjord.RDA])[3:6]) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  geom_segment(data = RDA.biplot,
+               aes(x = 0, xend = RDA1, y = 0, yend = RDA2),
+               arrow=arrow(length=unit(0.01,"npc")),
+               color = "#C20000") +
+  geom_text(data = RDA.biplot,
+            aes(x = RDA1*1.1, y = RDA2*1.1, label=rownames(RDA.biplot)),
+            size = 3,
+            color = "#C20000") +
+  geom_point(data = RDA.species,
+             aes(x = RDA1*3, y = RDA2*3),
+                 shape = 3,
+                 colour = "black",
+                 size = 2) +
+  # geom_text(data = RDA.species,
+  #           aes(x = RDA1*3, y = RDA2*3, label = taxonomy[rownames(RDA.speices),"genus"]), # Add a multiplicating factor to see the species
+  #           size = 3,
+  #           color = "black") +
+  labs(col = "Water type",
+       x = "RDA1 65%",
+       y = "RDA2 25%",
+       size = 8) +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text (size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.position = c(0.87,0.89))
+plot.Jun.fjord.RDA
+```
+
+## Water column and rivers
+
+### Compute RDA
+
+```{r}
+names.rivers.RDA <- which(subsites.meta$type!="Sediment" & !is.na(submeta$DOC) & !is.na(submeta$Turbidity))
+
+
+Salinity <- submeta$Salinity[names.rivers.RDA]
+#Temperature <- submeta$Temperature[names.rivers.RDA] # Not available for rivers
+Turbidity <- submeta$Turbidity[names.rivers.RDA] # Available for rivers but with removed samples
+#Depth <- submeta$Station_Depth[names.rivers.RDA] # Not available for rivers
+#Secchi <- submeta$Secchi[names.rivers.RDA] # Not available for rivers
+SPM <- submeta$SPM[names.rivers.RDA]
+SUVA <- submeta$SUVA254[names.rivers.RDA]
+#Chla <- submeta$Chla[names.rivers.RDA] # Not available for rivers
+#Phaeo <- submeta$Phaeo[names.rivers.RDA] # Not available for rivers
+d13C.POM <- submeta$d13C_POM[names.rivers.RDA]
+d15N.POM <- submeta$d15N_POM[names.rivers.RDA]
+POC <- submeta$POC[names.rivers.RDA]
+CN.POM <- submeta$CN_POM[names.rivers.RDA]
+partP <- submeta$PartP[names.rivers.RDA]
+partN <- submeta$PartN[names.rivers.RDA]
+SiO2 <- submeta$SiO2[names.rivers.RDA]
+NO2.NO3 <- submeta$NO2_NO3[names.rivers.RDA]
+DOC <- submeta$DOC[names.rivers.RDA]
+```
+
+```{r, eval = FALSE}
+river.RDA <- rda(hellinger_relrarOTU.meta[names.rivers.RDA,] ~ Salinity+Turbidity+SPM+SUVA+SiO2+CN.POM+partP+partN+POC+NO2.NO3+d15N.POM+d13C.POM+DOC)
+
+anova.river.RDA <- anova(river.RDA)
+anova.river.RDA
+```
+
+### Model selection
+
+Choose constraining variables
+
+```{r, eval = FALSE}
+ordistep.rivers <- ordistep(river.RDA)
+```
+
+```{r}
+river.RDA <- rda(hellinger_relrarOTU.meta[names.rivers.RDA,] ~ Salinity+Turbidity+DOC+SiO2)
+
+anova.river.RDA.terms <- anova(river.RDA, by = "term", perm = how(nperm=999), parallel = 4)
+anova.river.RDA.terms
+```
+
+
+Check for multicolinearity
+
+```{r}
+vif.cca(river.RDA)
+```
+
+Get eigenvalues
+
+```{r, results = 'hide'}
+summary(river.RDA) # RDA1 70% ; RDA2 20%
+```
+
+### Plot RDA
+
+```{r}
+scores.river.RDA <- scores(river.RDA, display=c("sites","cn","bp","sp")) # sites, centroids, biplot, species
+RDA.centroids.rivers <- data.frame(scores.river.RDA$centroids)
+RDA.sites.rivers <- data.frame(scores.river.RDA$sites)
+RDA.biplot.rivers <- data.frame(scores.river.RDA$biplot)
+RDA.species.river <- data.frame(scores.river.RDA$species)
+RDA.species.river <- RDA.species.river[which(abs(RDA.species.river$RDA1) > 0.08 | abs(RDA.species.river$RDA2) > 0.08),]
+
+plot.rivers.RDA <- ggplot(RDA.sites.rivers, aes(x = RDA1, y = RDA2)) +
+  geom_point(aes(x = RDA1, y = RDA2,
+                 col=subsites.meta$water[names.rivers.RDA],
+                 shape = subsites.meta$season[names.rivers.RDA]),
+             size = 4) +
+  scale_color_manual(values = levels(subsites.meta$waterCol[names.rivers.RDA])[-6]) +
+  scale_shape_manual(values = c(18,16,17)) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  geom_segment(data = RDA.biplot.rivers,
+               aes(x = 0, xend = RDA1, y = 0, yend = RDA2),
+               arrow=arrow(length=unit(0.01,"npc")),
+               color = "#C20000") +
+  geom_text(data = RDA.biplot.rivers,
+            aes(x = RDA1*1.1, y = RDA2*1.1, label=rownames(RDA.biplot.rivers)), #rownames(RDA.biplot.rivers)
+            size = 4,
+            color = "#C20000") +
+  geom_point(data = RDA.species.river,
+             aes(x = RDA1*3, y = RDA2*3),
+                 shape = 3,
+                 colour = "black",
+                 size = 2) +
+  # geom_text(data = RDA.species.river,
+  #           aes(x = RDA1*3, y = RDA2*3, label = taxonomy[rownames(RDA.species.river),"genus"]), # Add a multiplicating factor to see the species
+  #           size = 3,
+  #           color = "black") +
+  labs(col = "Water type", shape = "Month",
+       x = "RDA1 70%",
+       y = "RDA2 20%") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text (size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.background = element_blank(),
+        legend.box.background= element_rect(colour="black"),
+        legend.position = c(0.87,0.25))
+
+
+plot.rivers.RDA
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/RDA_rivers.pdf")
+```
+
+# Check that unrarefied data give similar results
+
+## Procrustes
+
+```{r}
+log_meta <- log10(abs(meta+1)) # log transformation, add prior to avoid null values
+
+envar.PCA <- rda(log_meta[which(sites.meta$type=="Fjord" & log_meta$DOC!="NA"),])
+
+hellinger_relOTU.meta <- decostand(relOTU.meta, "hellinger") # PCA is based on euclidean distances
+
+community.PCA <- rda(hellinger_relOTU.meta[which(sites.meta$type=="Fjord" & log_meta$DOC!="NA"),])
+
+env.Procrustes <- procrustes(community.PCA,envar.PCA, symmetric=TRUE)
+summary(env.Procrustes)
+
+env.Procrustes.sign <- protest(envar.PCA, community.PCA, scores="sites") # p < 0.001
+env.Procrustes.sign # Significative too
+```
+
+## RDA in the water column
+
+### Compute RDA
+
+```{r}
+names.season.RDA <- which(sites.meta$type=="Fjord" & meta$DOC!="NA") # Get all water column samples available in envrionmental data and with defined DOC values
+
+Salinity <- meta$Salinity[names.season.RDA]
+Temperature <- meta$Temperature[names.season.RDA]
+Turbidity <- meta$Turbidity[names.season.RDA]
+Depth <- meta$Station_Depth[names.season.RDA]
+Secchi <- meta$Secchi[names.season.RDA]
+SPM <- meta$SPM[names.season.RDA]
+SUVA <- meta$SUVA254[names.season.RDA]
+Chla <- meta$Chla[names.season.RDA]
+Phaeo <- meta$Phaeo[names.season.RDA]
+d13C.POM <- meta$d13C_POM[names.season.RDA]
+d15N.POM <- meta$d15N_POM[names.season.RDA]
+POC <- meta$POC[names.season.RDA]
+CN.POM <- meta$N_POM[names.season.RDA]
+partP <- meta$PartP[names.season.RDA]
+partN <- meta$PartN[names.season.RDA]
+SiO2 <- meta$SiO2[names.season.RDA]
+NO2.NO3 <- meta$NO2_NO3[names.season.RDA]
+DOC <- meta$DOC[names.season.RDA] # Missing values,leaving samples out
+PO4 <- meta$PO4[names.season.RDA]
+NH4 <- meta$NH4[names.season.RDA]
+
+season.RDA <- rda(hellinger_relOTU.meta[names.season.RDA,] ~ Temperature+Secchi+DOC+Chla+SUVA)
+```
+
+### Statistical analysis
+
+```{r}
+vif.cca(season.RDA) # OK
+```
+
+```{r, eval = FALSE}
+summary(season.RDA) # RDA1 54 ; RDA2 21%
+```
+
+```{r}
+anova.season.RDA.terms <- anova(season.RDA, by = "term", perm = how(nperm = 999), parallel = 4)
+anova.season.RDA.terms
+```
+
+### Plot RDA
+
+```{r, fig.height = 7, fig.width = 7}
+scores.season.RDA <- scores(season.RDA, display=c("sites","cn","bp","sp")) # sites, centroids, biplot, species
+RDA.centroids <- data.frame(scores.season.RDA$centroids)
+RDA.sites.fjord <- data.frame(scores.season.RDA$sites)
+RDA.biplot.fjord <- data.frame(scores.season.RDA$biplot)
+RDA.species.fjord <- data.frame(scores.season.RDA$species) # get all OTUs
+RDA.species.fjord <- RDA.species.fjord[which(abs(RDA.species.fjord$RDA1) > 0.08 | abs(RDA.species.fjord$RDA2) > 0.08),] # filter species based on scores
+
+plot.season.RDA <- ggplot(RDA.sites.fjord, aes(x = RDA1, y = RDA2)) +
+  geom_point(aes(x = RDA1, y = RDA2,
+                 col = sites.meta$water[names.season.RDA],
+                 shape = sites.meta$month[names.season.RDA]),
+             size = 4) +
+  scale_colour_manual(values = levels(sites.meta$waterCol)[2:5]) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_vline(xintercept=0, linetype="dotted") +
+  geom_segment(data = RDA.biplot.fjord,
+               aes(x = 0, xend = RDA1, y = 0, yend = RDA2),
+               arrow = arrow(length=unit(0.01,"npc")),
+               color = "#C20000") +
+  geom_text(data = RDA.biplot.fjord,
+            aes(x = RDA1*1.05, y = RDA2*1.05, label = rownames(RDA.biplot.fjord)), #c("Temperature","Secchi depth","DOC","POC d13C","Chl a","SUVA 254")), # label = rownames(RDA.biplot.fjord)
+            size = 4,
+            color = "#C20000") +
+  geom_point(data = RDA.species.fjord,
+             aes(x = RDA1*3, y = RDA2*3),
+             col = "black",
+             shape = 3,
+             size = 2) +
+  # geom_text(data = RDA.species.fjord,
+  #           aes(x = RDA1*3, y = RDA2*3, label = taxonomy[rownames(RDA.species.fjord),"genus"]), # Add a multiplicating factor to see the species
+  #               size = 3,
+  #               color = "black") +
+  labs(col = "Water type", shape = "Month",
+       x = "RDA1 54%",
+       y = "RDA2 21%",
+       size = 8) +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text (size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.background = element_blank(),
+        legend.box.background = element_rect(colour="black"),
+        legend.position = c(0.89,0.82)) # +
+  # guides(col = guide_legend(ncol = 2))
+
+plot.season.RDA
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/RDA_Water_column_Season_unrar.pdf")
+```
+
+
+# Correlations between environmental variables and indicator taxa in the water column
+
+## Load data from indicator species
+
+```{r}
+Aug.indic.table.1 <- readRDS("./R_data/August_indicators_high.rds")
+Jun.indic.table.1 <- readRDS("./R_data/June_indicators_high.rds")
+```
+
+## Load data from taxonomic composition
+
+```{r}
+pooled.taxa <- readRDS("./R_data/Taxa_pooled_all.rds")
+
+relGenus <- prop.table(t(pooled.taxa$genus), 2) * 100
+```
+
+
+## Matrix of correlations
+
+Remove river samples from the analysis, take indicators from indic species carried out only on the water column (different names)
+
+```{r}
+# Names from indic species; cf. per group subsetting in indicator species script
+names.indicators.August <- rownames(Aug.indic.table.1) #Aug.indic.table computed in the indicator species script (length 21)
+names.indicators.June <- rownames(Jun.indic.table.1) #Jun.indic.table computed in the indicator species script  (length 15)
+
+# Manually curate the names of the indicators that are common between June and August
+names.indicators.August <- names.indicators.August[- grep("Polaribacter",names.indicators.August)]
+names.indicators.August <- names.indicators.August[- grep("SAR92 clade",names.indicators.August)]
+names.indicators.August <- names.indicators.August[- grep("Sulfitobacter",names.indicators.August)]
+names.indicators.August <- names.indicators.August[- grep("Halomonas",names.indicators.August)]
+names.indicators.August <- names.indicators.August[- grep("Ilumatobacter",names.indicators.August)]
+names.indicators.August <- names.indicators.August[- grep("Yoonia-Loktanella",names.indicators.August)]
+names.indicators.August <- names.indicators.August[- grep("OM43",names.indicators.August)]
+
+
+names.indicators.June <- names.indicators.June[- grep("Flavobacteriaceae", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("NS5 marine group", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("OM43 clade", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("OM60", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("Planktomarina", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("Alcanivorax", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("Pseudoalteromonas", names.indicators.June)]
+names.indicators.June <- names.indicators.June[- grep("Sphingorhabdus", names.indicators.June)]
+
+
+# length August 15, length June 7
+
+names.indicators.Season <- c(names.indicators.June,names.indicators.August)
+length(names.indicators.Season) # Check the names (length 21)
+```
+
+
+Match relGenus samples with submeta samples  
+
+```{r}
+relGenus.meta <- relGenus[names.indicators.Season,colnames(relGenus) %in% rownames(submeta)] # subset to abundant indicator taxa & samples that are available in metadata
+relGenus.meta <- relGenus.meta[,which(subsites.meta$type=="Fjord")] # Keep only swater column samples
+dim(relGenus.meta) # Check dimensions 21 indicators x 60 variables
+relGenus.meta <- as.data.frame(t(relGenus.meta)) 
+dim(relGenus.meta) # Check dimensions 60 x 21
+```
+
+Compute matrix of correlation between water column indicator taxa and environmental variables in the water column
+
+```{r}
+corr.matrix <- rcorr(x = as.matrix(relGenus.meta), y = as.matrix(submeta[which(subsites.meta$type == "Fjord"),]), type = "spearman") # only water column samples
+str(corr.matrix)
+
+names.envar <- colnames(submeta) # Names of the environmental variables
+
+corr.matrix.r <- corr.matrix$r[names.indicators.Season,names.envar] # dim 21 x 20
+corr.matrix.p <- corr.matrix$P[names.indicators.Season,names.envar]
+corr.matrix.n <- corr.matrix$n[names.indicators.Season,names.envar]
+```
+
+Adjust p-values (BH correction)
+
+```{r}
+corr.matrix.p.adjust <- data.frame()
+for (i in 1:nrow(corr.matrix.p)){
+  for (j in 1:ncol(corr.matrix.p)){
+    corr.matrix.p.adjust[i,j] <- p.adjust(corr.matrix.p[i,j], method = "BH", corr.matrix.n[i,j])
+  }
+}
+
+corr.matrix.p.adjust<- as.matrix(corr.matrix.p.adjust)
+rownames(corr.matrix.p.adjust) <- rownames(corr.matrix.r)
+colnames(corr.matrix.p.adjust) <- colnames(corr.matrix.r)
+
+str(corr.matrix.p.adjust) # 21 x 20
+
+# Set non significative r values to 0
+
+corr.matrix.r.adjust <- matrix(data = 0, nrow = nrow(corr.matrix.r), ncol = ncol(corr.matrix.r))
+rownames(corr.matrix.r.adjust) <- rownames(corr.matrix.r)
+colnames(corr.matrix.r.adjust) <- colnames(corr.matrix.r)
+corr.matrix.r.adjust[which(corr.matrix.p.adjust <= 0.05)] <- corr.matrix.r[which(corr.matrix.p.adjust <= 0.05)]
+
+rownames(corr.matrix.r.adjust) <- rownames(corr.matrix.r)
+colnames(corr.matrix.r.adjust) <- colnames(corr.matrix.r)
+
+str(corr.matrix.r.adjust) # 21 x 20
+```
+
+Reorder environmental variable names (columns)  
+
+```{r}
+corr.matrix.r.adjust <- corr.matrix.r.adjust[,c("Turbidity","Secchi","PartP","PartN","d13C_POM","CN_POM","SUVA254","PO4","NO2_NO3","NH4","SiO2","Chla","POC","DOC","Temperature","Salinity")]
+corr.matrix.p.adjust <- corr.matrix.p.adjust[,c("Turbidity","Secchi","PartP","PartN","d13C_POM","CN_POM","SUVA254","PO4","NO2_NO3","NH4","SiO2","Chla","POC","DOC","Temperature","Salinity")]
+# Station depth, SPM, d15N PN, phaeophytin removed (dim 28 x 16)
+
+# Change colnames
+
+colnames(corr.matrix.r.adjust) <- c("Turbidity","Secchi","Particulate P","Particulate N","POC d13C","C:N","SUVA254","PO4","NO2 + NO3","NH4","SiO2","Chla","POC","DOC","Temperature","Salinity")
+colnames(corr.matrix.p.adjust) <- c("Turbidity","Secchi","Particulate P","Particulate N","POC d13C","C:N","SUVA254","PO4","NO2 + NO3","NH4","SiO2","Chla","POC","DOC","Temperature","Salinity")
+```
+
+Rename indicators (remove _unclassified)
+
+```{r}
+rownames(corr.matrix.r.adjust)
+rownames(corr.matrix.r.adjust) <- c("Formosa","Methylophagaceae","Nitrincolaceae","Octadecabacter","Polaribacter","SAR92 clade","Sulfitobacter","Ascidiaceihabitans","Candidatus Aquiluna","SAR11 Clade Ia","Cryomorphaceae","Flavobacteriaceae","Fluviicola","Luteolibacter","NS5 marine group","OM60(NOR5) clade","Planktomarina","Roseibacillus","SUP05 cluster","Sva0996 marine group","Ulvibacter")
+rownames(corr.matrix.p.adjust) <- c("Formosa","Methylophagaceae","Nitrincolaceae","Octadecabacter","Polaribacter","SAR92 clade","Sulfitobacter","Ascidiaceihabitans","Candidatus Aquiluna","SAR11 Clade Ia","Cryomorphaceae","Flavobacteriaceae","Fluviicola","Luteolibacter","NS5 marine group","OM60(NOR5) clade","Planktomarina","Roseibacillus","SUP05 cluster","Sva0996 marine group","Ulvibacter")
+```
+
+## Heatmap of correlations
+
+Make a df suitable for ggplot
+
+```{r}
+corr.Heatmap <- as.data.frame(t(corr.matrix.r.adjust)) # dim 16 x 21
+
+nb.envar <- length(colnames(corr.matrix.r.adjust))
+envar <- rownames(corr.Heatmap)
+df <- data.frame()
+for (i in 1:length(colnames(corr.Heatmap))){ # for each taxa
+  taxa <- rep(colnames(corr.Heatmap)[i], times = nb.envar)
+  values <- corr.Heatmap[,i]
+  df0 <- data.frame(taxa, envar, values)
+  df <- rbind.data.frame(df, df0)
+}
+colnames(df) <- c("Taxa", "Envar", "Values")
+corr.Heatmap <- df # dim 336 x 3 (21 taxa * 16 variables)
+
+# Reorder levels of Envar column to get the right order in geom_tile
+levels(corr.Heatmap$Envar)
+corr.Heatmap$Envar <- factor(corr.Heatmap$Envar, rev(c("Salinity","Temperature","Turbidity","Secchi","POC d13C","C:N","SUVA254","DOC","POC","Chla","PO4","NO2 + NO3","NH4","SiO2","Particulate P","Particulate N")))
+
+# Reorder levels of taxa column to get them by decreasing abundance in geom_tile
+levels(corr.Heatmap$Taxa)
+corr.Heatmap$Taxa <- factor(corr.Heatmap$Taxa, c("Sulfitobacter","Nitrincolaceae","Polaribacter","Octadecabacter","Formosa","SAR92 clade","Methylophagaceae","Roseibacillus","SAR11 Clade Ia","OM60(NOR5) clade","Flavobacteriaceae","NS5 marine group","Candidatus Aquiluna","Planktomarina","Ulvibacter","Ascidiaceihabitans","Cryomorphaceae","SUP05 cluster","Fluviicola","Sva0996 marine group","Luteolibacter"))
+```
+
+Plot the heatmap with ggplot
+
+```{r, fig.height = 6, fig.width = 9}
+plot.Heatmap.corr <- ggplot(data = corr.Heatmap) +
+  geom_tile(aes(x = Taxa, y = Envar, fill = Values), color = "#6A6A6A", linetype = "dashed", size = 0.25) +
+  scale_fill_gradient2(high = "#00586C", mid = "#FFFFFF", low = "#6C0000") +
+  labs(fill = "Adjusted Spearman rho", x = element_blank(), y = element_blank()) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=60, hjust = 1, color = "black", size = 10),
+        axis.text.y = element_text(colour="black", size = 14),
+        panel.grid = element_blank())
+
+plot.Heatmap.corr
+```
+
+Save figure
+
+```{r, eval = FALSE}
+ggsave("./Plots/Heatmap_corr.pdf", width = 9, height = 6)
+```
+
+# Figure for paper
+
+```{r, eval = FALSE}
+RDA_Drivers <- plot_grid(plot.season.RDA, plot.Aug.fjord.RDA, labels = c("",""), nrow = 2)
+RDA_Drivers
+```
+
+```{r, eval = FALSE, include = FALSE}
+ggsave("./Plots/RDA_Drivers.pdf", width = 7, height = 14)
+```
+
+
+
