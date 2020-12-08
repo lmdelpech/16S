@@ -25,7 +25,7 @@ Each of them provides a short documentation on the required input files and the 
   
 ## Sources
 
-R scripts called by the R scripts. Most of them were authored by Christiane Hassenrück.  
+R scripts called by the .Rmd scripts. Most of them were authored by Christiane Hassenrück.  
 
 ## Other
 
