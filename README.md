@@ -14,6 +14,7 @@ These files should be then processed in R using the **ReadAmplicon.R** script (S
 This folder contains R markdown script files, which are customized for the output of the **ReadAmplicon.R** outputs (Sources).
 Each of them provides a short documentation on the required input files and the output.
 
+* **16S_Data_formatting**: script that should be run first, provides important processing for OTU tables and other useful tables. Tables generated in this script are used downstream in all R scripts.  
 * **16S_Alpha_diversity**: script to compute diversity indices, and plot according to groups of samples.
 * **16S_Beta_diversity**: compute multivariate statistic and visualize ordinations with ggplot2.
 * **16S_Taxonomic_composition**: investigate taxonomic composition and provides script to visualize data, as well as output of abundance tables.
