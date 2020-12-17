@@ -22,6 +22,7 @@ Each of them provides a short documentation on the required input files and the 
 * **16S_Environmental_drivers**: compute constrained multivariate analyses using environmental data, visualize ordinations with ggplot2, correlation of indicators with environmental variables.   
 * **16S_Functional_analysis**: based on the R package Tax4Fun to infer functions from taxonomy, visualize data with ordinations and heatmap.  
 
+The subfolder **16S_html_compiled** contains the same scripts compiled with the original data that have been used to write the scripts.
   
 ## Sources
 
@@ -33,7 +34,7 @@ R scripts called by the .Rmd scripts. Most of them were authored by Christiane H
 
 :exclamation: These files are optimized for the studied environmental system and dependant on metadata of the system. 
 
-:dna: The original sequencing data have been archived at the European Nucleotide Archive. I can provide a sample dataset to run the scripts.
+:dna: The original sequencing data have been archived at the European Nucleotide Archive. The processed table (output of ReadAmplicon.R) have been made available on Dataverse (<https://doi.org/10.18710/JDWLVA>). I can also provide a sample dataset to run the scripts.
 
-:question: Please let me know if any problem or question.
+:question: Please let me know if you encounter any problem or question.
 
