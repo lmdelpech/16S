@@ -30,9 +30,9 @@ R scripts called by the .Rmd scripts. Most of them were authored by Christiane H
 
 **silva138_tax_ssu_curated.tsv** is the file used for parsing taxonomy in the ReadAmplicon.R script. It was generated based on the  tax_slv_ssu.txt file from the SILVA archive by Christiane Hassenrück (<https://gitlab.leibniz-zmt.de/chh/bioinf/blob/master/silva138_tax_ssu_curated.tsv>).
 
-:exclamation: These files are optimized for the studied environmental system and dependant on metadata of the system. 
+:exclamation: These files are optimized for the studied environmental system and dependant on metadata of the system. The scripts are meant for replication of the following published study: <https://doi.org/10.3389/fmicb.2021.614634>
 
-:dna: The original sequencing data have been archived at the European Nucleotide Archive. The processed table (output of ReadAmplicon.R) have been made available on Dataverse (<https://doi.org/10.18710/JDWLVA>). I can also provide a sample dataset to run the scripts.
+:dna: The original sequencing data have been archived at the European Nucleotide Archive. The processed table (output of ReadAmplicon.R) have been made available on Dataverse (<https://doi.org/10.18710/JDWLVA>).
 
 :question: Please let me know if you encounter any problem or question.
 
